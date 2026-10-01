@@ -5,6 +5,19 @@ import { testDb } from "./helpers.ts";
 const CONFIG: BridgeConfig = { port: 0, maxMessageBytes: 64 * 1024, wake: {} };
 
 describe("channel mailbox subscription", () => {
+  test("reports a push to a connected channel instead of a missing wake", async () => {
+    const bridge = new Bridge(testDb(), CONFIG);
+    const pending = bridge.subscribeMailbox("claude-web-c3d4", 5, undefined, 0);
+
+    const sent = bridge.send("claude-api-a1b2", "claude-web-c3d4", "run the tests");
+    expect(sent.notify).toEqual({ "claude-web-c3d4": "pushed-to-channel" });
+    await expect(pending).resolves.toMatchObject([{ recipient: "claude-web-c3d4", content: "run the tests" }]);
+
+    expect(bridge.send("claude-api-a1b2", "claude-web-c3d4", "no channel now").notify).toEqual({
+      "claude-web-c3d4": "no-wake-configured",
+    });
+  });
+
   test("replays unread mail queued before the shim connects without consuming it", async () => {
     const bridge = new Bridge(testDb(), CONFIG);
     bridge.send("opencode", "claude-desktop-a1b2", "queued before startup");

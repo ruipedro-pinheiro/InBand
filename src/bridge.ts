@@ -174,6 +174,8 @@ export class Bridge {
     });
     const { messageId, resolvedTo, recipients, senderRole } = routeAndInsert();
 
+    // Recipients whose channel subscription received the message during this call.
+    const channelRecipients = new Set<string>();
     if (this.familyWaiters.length > 0) {
       const remaining: FamilyWaiter[] = [];
       for (const fw of this.familyWaiters) {
@@ -190,6 +192,7 @@ export class Bridge {
         if (rows.length > 0) {
           clearTimeout(fw.timer);
           fw.resolve(rows);
+          for (const row of rows) channelRecipients.add(row.recipient);
         } else {
           remaining.push(fw);
         }
@@ -200,7 +203,10 @@ export class Bridge {
     const wakes: Record<string, string> = {};
     const warnings: string[] = [];
     for (const recipient of recipients) {
-      if (this.resolveWaiters(recipient)) {
+      const waiting = this.resolveWaiters(recipient);
+      if (channelRecipients.has(recipient)) {
+        wakes[recipient] = "pushed-to-channel";
+      } else if (waiting) {
         wakes[recipient] = "delivered-to-waiting-agent";
       } else {
         wakes[recipient] = this.maybeWake(recipient);
