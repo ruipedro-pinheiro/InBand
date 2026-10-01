@@ -51,7 +51,8 @@ if ! command -v bun >/dev/null 2>&1; then
   echo "bun is required. Install it from https://bun.sh, then run this again." >&2
   exit 1
 fi
-say "bun $(bun --version)"
+BUN_BIN="$(command -v bun)"
+say "bun $(bun --version) at $BUN_BIN"
 
 step "Installing dependencies"
 (cd "$ROOT" && bun install --silent)
@@ -82,12 +83,18 @@ write_server_tokens() {
 write_config() {
   step "Writing config.json"
   if [ -f "$ROOT/config.json" ]; then
-    if bun -e '
+    # Exit codes: 0 auth complete, 1 auth or clients missing, 2 auth disabled by the user.
+    local state=0
+    bun -e '
       const fs = require("fs");
       const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      process.exit(cfg.auth && cfg.auth.required !== false && cfg.auth.clients ? 0 : 1);
-    ' "$ROOT/config.json"; then
+      if (cfg.auth && cfg.auth.required === false) process.exit(2);
+      process.exit(cfg.auth && cfg.auth.clients ? 0 : 1);
+    ' "$ROOT/config.json" || state=$?
+    if [ "$state" = 0 ]; then
       say "config.json exists with auth enabled, left untouched"
+    elif [ "$state" = 2 ]; then
+      say "WARNING: auth.required is false in config.json. Left as is: every local process can use the daemon"
     else
       BACKUP="$ROOT/config.json.pre-auth.bak"
       cp "$ROOT/config.json" "$BACKUP"
@@ -97,11 +104,10 @@ write_config() {
         const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
         const sample = JSON.parse(fs.readFileSync(example, "utf8"));
         cfg.auth ??= sample.auth;
-        cfg.auth.required = true;
         cfg.auth.clients ??= sample.auth.clients;
         fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
       ' "$ROOT/config.json" "$ROOT/config.example.json"
-      say "added auth.required=true to config.json, backup kept at $BACKUP"
+      say "added the missing auth settings to config.json, backup kept at $BACKUP"
     fi
   else
     CODEX_BIN="$(command -v codex || true)"
@@ -181,6 +187,34 @@ if [ "$DO_HOOKS" = 1 ]; then
     say "backup kept at $SETTINGS.bak"
   fi
 
+  step "Installing Codex hooks"
+  if [ ! -d "$HOME/.codex" ]; then
+    say "no $HOME/.codex, skipping"
+  else
+    CODEX_HOOKS="$HOME/.codex/hooks.json"
+    [ -f "$CODEX_HOOKS" ] || echo '{}' > "$CODEX_HOOKS"
+    cp "$CODEX_HOOKS" "$CODEX_HOOKS.bak"
+    bun -e '
+      const fs = require("fs");
+      const [file, command] = process.argv.slice(1);
+      const s = JSON.parse(fs.readFileSync(file, "utf8"));
+      s.hooks ??= {};
+      let added = 0;
+      for (const [event, statusMessage] of [
+        ["SessionStart", "Registering the agent-bridge mailbox"],
+        ["Stop", "Checking the agent-bridge mailbox"],
+      ]) {
+        s.hooks[event] ??= [];
+        if (JSON.stringify(s.hooks[event]).includes("codex-hook.ts")) continue;
+        s.hooks[event].push({ hooks: [{ type: "command", command, statusMessage, timeout: 5 }] });
+        added++;
+      }
+      fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
+      console.log(`  ${added} hook(s) added to ${file}, ${2 - added} already present`);
+    ' "$CODEX_HOOKS" "\"$BUN_BIN\" run \"$ROOT/scripts/codex-hook.ts\""
+    say "backup kept at $CODEX_HOOKS.bak. Codex asks you to trust new hooks on its next start"
+  fi
+
   step "Installing /lead commands"
   install_command() {
     local client="$1" config_dir="$2" target_dir="$3"
@@ -208,7 +242,8 @@ if [ "$DO_SERVICE" = 1 ]; then
     say "no systemctl, start the daemon yourself: bun run src/index.ts"
   else
     mkdir -p "$UNIT_DIR"
-    sed "s|%h/.local/share/mcp-servers/agent-bridge|$ROOT|g" \
+    sed -e "s|%h/.bun/bin/bun|$BUN_BIN|g" \
+        -e "s|%h/.local/share/mcp-servers/agent-bridge|$ROOT|g" \
       "$ROOT/agent-bridge.service.example" > "$UNIT_DIR/agent-bridge.service"
     systemctl --user daemon-reload
     systemctl --user enable agent-bridge

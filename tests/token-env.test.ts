@@ -31,4 +31,10 @@ describe("token env loading", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("prefers the client token and uses AGENT_BRIDGE_TOKEN only as a fallback", () => {
+    const env = { AGENT_BRIDGE_TOKEN: "generic", AGENT_BRIDGE_CLAUDE_TOKEN: "claude" };
+    expect(clientTokenFromEnv("claude", env)).toBe("claude");
+    expect(clientTokenFromEnv("codex", env)).toBe("generic");
+  });
 });

@@ -39,5 +39,5 @@ export function clientTokenFromEnv(
   env: Record<string, string | undefined> = Bun.env,
 ): string | undefined {
   const scoped = `AGENT_BRIDGE_${clientId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_TOKEN`;
-  return env.AGENT_BRIDGE_TOKEN ?? env[scoped];
+  return env[scoped] ?? env.AGENT_BRIDGE_TOKEN;
 }
