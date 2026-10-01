@@ -10,7 +10,7 @@ InBand is a message bus for coding agents. It runs as one local MCP
 daemon. Claude Code, Codex and OpenCode sessions use it to send tasks and
 results to each other.
 
-![Demo: a lead session delegates a test run to a worker session](docs/demo.gif)
+![Demo: a lead session finds a worker session, delegates a test run and a fix](docs/demo.gif)
 
 ```
 send_message        # send to a mailbox, to "codex" (latest Codex session) or to "all"
