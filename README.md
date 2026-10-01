@@ -84,7 +84,10 @@ logged and never fatal: the message stays queued.
 The daemon binds `127.0.0.1` and rejects unauthenticated calls. Tokens live in
 `tokens.env` with mode 0600 and are scoped per agent family, so the Claude token
 cannot act as a Codex mailbox. The admin token is required for full visibility
-and for `clear_conversation`. Hooks sign their requests with HMAC. A
+and for `clear_conversation`. A client can list more agents in `ping` and
+`/health` through the optional `directory` patterns in its `auth.clients`
+entry, for example `"directory": ["*"]`. This list shows presence only. It
+gives no access to other mailboxes or to their history. Hooks sign their requests with HMAC. A
 non-loopback bind or wake URL requires an explicit unsafe flag.
 
 This is IPC between processes running as the same Unix user. Any process under

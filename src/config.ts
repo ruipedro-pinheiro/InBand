@@ -136,6 +136,15 @@ function validateAuthConfig(value: unknown): AuthConfig | undefined {
     if (!normalizedAgents.every((agent) => AGENT_PATTERN_RE.test(agent))) {
       throw new Error(`auth.clients.${clientId}.agents contains an invalid agent pattern`);
     }
+    const directory = rawClient.directory;
+    if (
+      directory !== undefined &&
+      (!Array.isArray(directory) ||
+        directory.length === 0 ||
+        !directory.every((item) => typeof item === "string" && AGENT_PATTERN_RE.test(item.trim().toLowerCase())))
+    ) {
+      throw new Error(`auth.clients.${clientId}.directory must be a non-empty array of agent patterns`);
+    }
     const token = rawClient.token === undefined ? undefined : expectString(rawClient.token, `auth.clients.${clientId}.token`);
     const tokenEnv =
       rawClient.tokenEnv === undefined ? undefined : expectString(rawClient.tokenEnv, `auth.clients.${clientId}.tokenEnv`);
@@ -144,6 +153,7 @@ function validateAuthConfig(value: unknown): AuthConfig | undefined {
       token,
       tokenEnv,
       agents: normalizedAgents,
+      ...(directory === undefined ? {} : { directory: directory.map((agent: string) => agent.trim().toLowerCase()) }),
       admin: Boolean(rawClient.admin),
     };
   }

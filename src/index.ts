@@ -11,6 +11,7 @@ import {
   assertFamilyAuthorized,
   authenticateRequest,
   buildAuthRuntime,
+  directoryAgentPatterns,
   disabledAuthInfo,
   visibleAgentPatterns,
   type AgentBridgeAuthInfo,
@@ -265,7 +266,7 @@ function buildServer(): McpServer {
       try {
         const requestAuth = authFromExtra(extra);
         if (from) assertAgentAuthorized(requestAuth, bridge.normalizeAgent(from, "from"), "from");
-        return asText(bridge.status(from, visibleAgentPatterns(requestAuth)));
+        return asText(bridge.status(from, directoryAgentPatterns(requestAuth), visibleAgentPatterns(requestAuth)));
       } catch (err) {
         return asError(err);
       }
@@ -332,7 +333,7 @@ app.get("/mcp", reject405);
 app.delete("/mcp", reject405);
 
 app.get("/health", (_req: ExpressRequest, res: ExpressResponse) => {
-  res.json({ ok: true, ...bridge.status(undefined, visibleAgentPatterns(_req.auth)) });
+  res.json({ ok: true, ...bridge.status(undefined, directoryAgentPatterns(_req.auth), visibleAgentPatterns(_req.auth)) });
 });
 
 app.post("/codex/hook", (req: ExpressRequest, res: ExpressResponse) => {

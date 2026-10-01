@@ -5,6 +5,8 @@ export interface AuthClientConfig {
   token?: string;
   tokenEnv?: string;
   agents: string[];
+  /** Agent patterns listed by ping and /health. Defaults to `agents`. Grants no mailbox access. */
+  directory?: string[];
   admin?: boolean;
 }
 
@@ -18,6 +20,7 @@ export type AuthMode = "bearer" | "hmac" | "disabled";
 export interface AgentBridgeAuthInfo extends AuthInfo {
   extra: {
     agents: string[];
+    directory?: string[];
     admin: boolean;
     mode: AuthMode;
   };
@@ -27,6 +30,7 @@ interface ResolvedClient {
   clientId: string;
   token: string;
   agents: string[];
+  directory: string[];
   admin: boolean;
 }
 
@@ -127,6 +131,10 @@ export function buildAuthRuntime(
     if (!agents.every((agent) => AGENT_PATTERN_RE.test(agent))) {
       throw new Error(`auth client "${clientId}" contains an invalid agent pattern`);
     }
+    const directory = client.directory?.map((agent) => agent.trim().toLowerCase()) ?? agents;
+    if (directory.length === 0 || !directory.every((agent) => AGENT_PATTERN_RE.test(agent))) {
+      throw new Error(`auth client "${clientId}" contains an invalid directory pattern`);
+    }
     const token = tokenFromConfig(clientId, client, env);
     if (tokens.has(token)) throw new Error(`duplicate auth token configured for client "${clientId}"`);
     tokens.add(token);
@@ -134,6 +142,7 @@ export function buildAuthRuntime(
       clientId,
       token,
       agents,
+      directory,
       admin: Boolean(client.admin),
     });
   }
@@ -149,7 +158,12 @@ function authInfo(client: ResolvedClient, mode: AuthMode): AgentBridgeAuthInfo {
     token: "[redacted]",
     clientId: client.clientId,
     scopes: client.admin ? ["admin"] : client.agents.map((pattern) => `agent:${pattern}`),
-    extra: { agents: client.admin ? ["*"] : client.agents, admin: client.admin, mode },
+    extra: {
+      agents: client.admin ? ["*"] : client.agents,
+      directory: client.admin ? ["*"] : client.directory,
+      admin: client.admin,
+      mode,
+    },
   };
 }
 
@@ -158,7 +172,7 @@ export function disabledAuthInfo(): AgentBridgeAuthInfo {
     token: "[auth-disabled]",
     clientId: "auth-disabled",
     scopes: ["admin"],
-    extra: { agents: ["*"], admin: true, mode: "disabled" },
+    extra: { agents: ["*"], directory: ["*"], admin: true, mode: "disabled" },
   };
 }
 
@@ -278,4 +292,11 @@ export function assertAdmin(auth: AgentBridgeAuthInfo): void {
 
 export function visibleAgentPatterns(auth: AgentBridgeAuthInfo): string[] | undefined {
   return auth.extra.admin ? undefined : auth.extra.agents;
+}
+
+// Presence listing only. History and mailbox access keep using visibleAgentPatterns.
+export function directoryAgentPatterns(auth: AgentBridgeAuthInfo): string[] | undefined {
+  if (auth.extra.admin) return undefined;
+  const directory = auth.extra.directory ?? auth.extra.agents;
+  return directory.includes("*") ? undefined : directory;
 }

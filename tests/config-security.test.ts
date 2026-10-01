@@ -112,5 +112,21 @@ describe("security config validation", () => {
         "wake": {}
       }`),
     ).toThrow(/agent pattern/i);
+    expect(() =>
+      loadBridgeConfigFromText(`{
+        "port": 7447,
+        "maxMessageBytes": 65536,
+        "auth": {
+          "clients": {
+            "codex": {
+              "token": "${"d".repeat(64)}",
+              "agents": ["codex-*"],
+              "directory": ["../claude-*"]
+            }
+          }
+        },
+        "wake": {}
+      }`),
+    ).toThrow(/directory/i);
   });
 });

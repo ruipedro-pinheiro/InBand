@@ -630,7 +630,8 @@ export class Bridge {
     return { messages: rows.reverse(), total };
   }
 
-  status(fromRaw?: string, visiblePatterns?: string[]) {
+  // visiblePatterns selects the listed agents. wakePatterns selects the wake log, which stays scoped to mailbox access.
+  status(fromRaw?: string, visiblePatterns?: string[], wakePatterns: string[] | undefined = visiblePatterns) {
     if (fromRaw) this.touchAgent(this.normalizeAgent(fromRaw, "from"));
     const agents = (
       this.db.query(`SELECT name, first_seen, last_seen FROM agents ORDER BY name`).all() as {
@@ -678,9 +679,9 @@ export class Bridge {
     let lastWakes = this.db
       .query(`SELECT recipient, created_at, ok, detail FROM wakes ORDER BY id DESC LIMIT 5`)
       .all() as Array<{ recipient: string; created_at: string; ok: number; detail: string }>;
-    if (visiblePatterns) {
+    if (wakePatterns) {
       lastWakes = lastWakes.filter((wake) =>
-        visiblePatterns.some((pattern) => agentMatchesPattern(wake.recipient, pattern)),
+        wakePatterns.some((pattern) => agentMatchesPattern(wake.recipient, pattern)),
       );
     }
     return { daemon: "agent-bridge", startedAt: this.startedAt, agents, lastWakes };

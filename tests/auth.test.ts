@@ -4,7 +4,9 @@ import {
   authenticateAuthorizationHeader,
   authenticateSignedRequest,
   buildAuthRuntime,
+  directoryAgentPatterns,
   signAgentBridgeRequest,
+  visibleAgentPatterns,
 } from "../src/auth.ts";
 
 const CLAUDE_TOKEN = "c".repeat(64);
@@ -83,5 +85,28 @@ describe("agent-bridge auth", () => {
         },
       }),
     ).toThrow(/agent pattern/i);
+  });
+
+  test("lists directory agents without granting mailbox or history access", () => {
+    const auth = buildAuthRuntime({
+      required: true,
+      clients: {
+        claude: { token: CLAUDE_TOKEN, agents: ["claude-*"] },
+        codex: { token: CODEX_TOKEN, agents: ["codex-*"], directory: ["*"] },
+      },
+    });
+    const claude = authenticateAuthorizationHeader(auth, `Bearer ${CLAUDE_TOKEN}`);
+    const codex = authenticateAuthorizationHeader(auth, `Bearer ${CODEX_TOKEN}`);
+
+    expect(directoryAgentPatterns(claude)).toEqual(["claude-*"]);
+    expect(directoryAgentPatterns(codex)).toBeUndefined();
+    expect(visibleAgentPatterns(codex)).toEqual(["codex-*"]);
+    expect(() => assertAgentAuthorized(codex, "claude-api-a1b2", "from")).toThrow(/not authorized/i);
+    expect(() =>
+      buildAuthRuntime({
+        required: true,
+        clients: { codex: { token: CODEX_TOKEN, agents: ["codex-*"], directory: [] } },
+      }),
+    ).toThrow(/directory pattern/i);
   });
 });
