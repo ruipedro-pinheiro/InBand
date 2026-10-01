@@ -5,6 +5,59 @@ import { testDb } from "./helpers.ts";
 const CONFIG: BridgeConfig = { port: 0, maxMessageBytes: 64 * 1024, wake: {} };
 
 describe("channel mailbox subscription", () => {
+  test("replays unread mail queued before the shim connects without consuming it", async () => {
+    const bridge = new Bridge(testDb(), CONFIG);
+    bridge.send("opencode", "claude-desktop-a1b2", "queued before startup");
+
+    await expect(bridge.subscribeMailbox("claude-desktop-a1b2", 1, undefined, 0)).resolves.toMatchObject([
+      { recipient: "claude-desktop-a1b2", content: "queued before startup" },
+    ]);
+    expect(bridge.fetchUnread("claude-desktop-a1b2")).toHaveLength(1);
+  });
+
+  test("reconnect cursor replays only later unread deliveries from the same family", async () => {
+    const bridge = new Bridge(testDb(), CONFIG);
+    const first = bridge.send("opencode", "claude-desktop-a1b2", "already notified");
+    bridge.send("opencode", "other-desktop-a1b2", "another family");
+    bridge.send("opencode", "claude-desktop-b2c3", "already consumed");
+    bridge.fetchUnread("claude-desktop-b2c3");
+    bridge.send("opencode", "claude-desktop-a1b2", "queued during reconnect");
+
+    await expect(bridge.subscribeFamily("claude", 1, undefined, first.messageId)).resolves.toMatchObject([
+      { recipient: "claude-desktop-a1b2", content: "queued during reconnect" },
+    ]);
+    expect(bridge.fetchUnread("claude-desktop-a1b2")).toHaveLength(2);
+  });
+
+  test("replayed broadcasts retain their concrete delivery targets", async () => {
+    const bridge = new Bridge(testDb(), CONFIG);
+    bridge.touchAgent("claude-desktop-a1b2");
+    bridge.touchAgent("claude-desktop-b2c3");
+    bridge.send("opencode", "all", "queued broadcast");
+    bridge.fetchUnread("claude-desktop-b2c3");
+
+    await expect(bridge.subscribeFamily("claude", 1, undefined, 0)).resolves.toMatchObject([
+      { recipient: "claude-desktop-a1b2", content: "queued broadcast" },
+    ]);
+  });
+
+  test("cursor skips old previews and still receives new live mail", async () => {
+    const bridge = new Bridge(testDb(), CONFIG);
+    const first = bridge.send("opencode", "claude-desktop-a1b2", "already notified");
+    const next = bridge.subscribeMailbox("claude-desktop-a1b2", 1, undefined, first.messageId);
+    bridge.send("opencode", "claude-desktop-a1b2", "new mail");
+
+    await expect(next).resolves.toMatchObject([{ content: "new mail" }]);
+  });
+
+  test("legacy subscribers without a cursor do not repeatedly replay unread mail", async () => {
+    const bridge = new Bridge(testDb(), CONFIG);
+    bridge.send("opencode", "claude-desktop-a1b2", "old mail");
+    const next = bridge.subscribeMailbox("claude-desktop-a1b2", 1);
+    bridge.send("opencode", "claude-desktop-a1b2", "new mail");
+    await expect(next).resolves.toMatchObject([{ content: "new mail" }]);
+  });
+
   test("resolves only messages sent to the exact mailbox", async () => {
     const bridge = new Bridge(testDb(), CONFIG);
     const subscription = bridge.subscribeMailbox("claude-desktop-a1b2", 5);

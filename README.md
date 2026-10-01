@@ -58,10 +58,23 @@ recent Codex session, or to `all` to broadcast.
 
 ## Waking idle agents
 
-Codex threads are resumed through `app-server`, OpenCode through
+Codex receives wake prompts through `codex queue --thread`, OpenCode through
 `POST /session/{id}/prompt_async`. Set `wake.codex.command` to the Codex binary
 you actually run, and launch OpenCode with `opencode --port 14096` so the daemon
-can find its server.
+can find its server. The Codex CLI must support the `queue` command. An open,
+idle Codex CLI processes the queued prompt automatically. If the CLI is closed,
+the prompt waits until that thread is resumed; the daemon does not launch a new CLI.
+
+Claude Code receives channel notifications through `agent-bridge-channel`.
+Start it with `--dangerously-load-development-channels server:agent-bridge-channel`.
+The shim subscribes to one exact mailbox. On the installed Claude Code CLI,
+it reads the current session from that parent process's local session registry,
+including after `/clear`. It uses the same mailbox names as the SessionStart hook.
+If the owning session cannot be verified, delivery pauses. There is no Claude
+family subscription fallback. Other clients must set `AGENT_BRIDGE_MAILBOX` to
+one concrete mailbox. Unread messages for that mailbox replay after startup or
+reconnection without being marked as read. Messages already inserted into a
+Claude conversation cannot be removed by the shim.
 
 Wakes are debounced 30 seconds and capped at 20 per hour. A failed wake is
 logged and never fatal: the message stays queued.

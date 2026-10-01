@@ -45,6 +45,7 @@ interface Waiter {
 interface FamilyWaiter {
   prefix: string;
   exact?: boolean;
+  afterId: number;
   resolve: (rows: MessageRow[]) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -173,7 +174,7 @@ export class Bridge {
       const remaining: FamilyWaiter[] = [];
       for (const fw of this.familyWaiters) {
         const rows: MessageRow[] = recipients
-          .filter((r) => r === fw.prefix || (!fw.exact && r.startsWith(fw.prefix + "-")))
+          .filter((r) => messageId > fw.afterId && (r === fw.prefix || (!fw.exact && r.startsWith(fw.prefix + "-"))))
           .map((r) => ({ id: messageId, sender: from, recipient: r, content, created_at: now }));
         if (rows.length > 0) {
           clearTimeout(fw.timer);
@@ -335,19 +336,21 @@ export class Bridge {
     prefixRaw: string,
     timeoutSeconds: number,
     onClose?: (cleanup: () => void) => void,
+    afterId?: number,
   ): Promise<MessageRow[]> {
     const prefix = this.normalizeAgent(prefixRaw, "prefix");
-    return this.subscribeChannel(prefix, false, timeoutSeconds, onClose);
+    return this.subscribeChannel(prefix, false, timeoutSeconds, onClose, afterId);
   }
 
   async subscribeMailbox(
     mailboxRaw: string,
     timeoutSeconds: number,
     onClose?: (cleanup: () => void) => void,
+    afterId?: number,
   ): Promise<MessageRow[]> {
     const mailbox = this.normalizeAgent(mailboxRaw, "mailbox");
     this.touchAgent(mailbox);
-    return this.subscribeChannel(mailbox, true, timeoutSeconds, onClose);
+    return this.subscribeChannel(mailbox, true, timeoutSeconds, onClose, afterId);
   }
 
   private async subscribeChannel(
@@ -355,7 +358,20 @@ export class Bridge {
     exact: boolean,
     timeoutSeconds: number,
     onClose?: (cleanup: () => void) => void,
+    afterId?: number,
   ): Promise<MessageRow[]> {
+    // Old shims omit the cursor. Keep their live-only behavior to avoid replay loops.
+    if (afterId !== undefined) {
+      if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error("invalid after_id");
+      const queued = this.db.query(
+        `SELECT m.id, m.sender, d.recipient, m.content, m.created_at
+         FROM deliveries d JOIN messages m ON m.id = d.message_id
+         WHERE d.read_at IS NULL AND m.id > ?1
+           AND (d.recipient = ?2 OR (?3 = 0 AND substr(d.recipient, 1, length(?2) + 1) = ?2 || '-'))
+         ORDER BY m.id ASC, d.recipient ASC`,
+      ).all(afterId, prefix, exact ? 1 : 0) as MessageRow[];
+      if (queued.length > 0) return queued;
+    }
     const timeout = Math.min(Math.max(Math.floor(timeoutSeconds), 1), 300);
     return new Promise<MessageRow[]>((resolve) => {
       const matchingWaiters = this.familyWaiters.filter((fw) => fw.prefix === prefix && fw.exact === exact);
@@ -365,6 +381,7 @@ export class Bridge {
       const fw: FamilyWaiter = {
         prefix,
         exact,
+        afterId: afterId ?? 0,
         resolve,
         timer: this.runtime.setTimeout(() => {
           this.removeFamilyWaiter(fw);
@@ -492,7 +509,7 @@ export class Bridge {
     this.recordWake(recipient, result);
 
     if (this.codexRetries.get(recipient) !== state) return;
-    if (result.disposition === "started" || this.unreadCount(recipient) === 0) {
+    if (result.disposition === "started" || result.disposition === "queued" || this.unreadCount(recipient) === 0) {
       this.cancelCodexRetry(recipient);
       return;
     }
@@ -509,7 +526,7 @@ export class Bridge {
   }
 
   private recordWake(recipient: string, result: CodexWakeResult): void {
-    const ok = result.disposition === "started";
+    const ok = result.disposition === "started" || result.disposition === "queued";
     const detail = `${result.disposition}: ${result.detail}`;
     this.db
       .query(`INSERT INTO wakes(recipient, created_at, ok, detail) VALUES (?1, ?2, ?3, ?4)`)

@@ -146,6 +146,19 @@ describe("Codex wake orchestration", () => {
     expect(scheduler.pending()).toBe(0);
   });
 
+  test("a queued wake counts as success and stops retries", async () => {
+    const { db, registry, bridge, scheduler, calls } = setup([{ disposition: "queued", detail: "accepted" }]);
+    registry.register({ sessionId: A, cwd: "/tmp/a", lifecycle: "idle" });
+    bridge.send("claude", MAILBOX_A, "queued work");
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(scheduler.pending()).toBe(0);
+    expect(db.query("SELECT ok, detail FROM wakes ORDER BY id DESC LIMIT 1").get()).toEqual({
+      ok: 1, detail: "queued: accepted",
+    });
+    expect(bridge.peekUnread(MAILBOX_A)).toHaveLength(1);
+  });
+
   test("successful retry stops remaining attempts", async () => {
     const active = { disposition: "deferred-active-turn", detail: "busy" } as const;
     const started = { disposition: "started", detail: "started" } as const;

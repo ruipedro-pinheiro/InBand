@@ -351,15 +351,20 @@ app.get("/subscribe", async (req: ExpressRequest, res: ExpressResponse) => {
     const mailbox = singleQueryParam(req.query.mailbox, "mailbox");
     const prefix = singleQueryParam(req.query.prefix, "prefix");
     const timeout = timeoutQueryParam(req.query.timeout, 55);
+    const afterRaw = singleQueryParam(req.query.after_id, "after_id");
+    const afterId = afterRaw === undefined ? undefined : Number(afterRaw);
+    if (afterRaw !== undefined && (!/^\d+$/.test(afterRaw) || !Number.isSafeInteger(afterId))) {
+      throw new Error("after_id must be a non-negative safe integer");
+    }
     const onClose = (cleanup: () => void) => res.on("close", cleanup);
     let messages;
     if (mailbox) {
       assertAgentAuthorized(req.auth, bridge.normalizeAgent(mailbox, "mailbox"), "mailbox");
-      messages = await bridge.subscribeMailbox(mailbox, timeout, onClose);
+      messages = await bridge.subscribeMailbox(mailbox, timeout, onClose, afterId);
     } else {
       const familyPrefix = bridge.normalizeAgent(prefix ?? "", "prefix");
       assertFamilyAuthorized(req.auth, familyPrefix, "prefix");
-      messages = await bridge.subscribeFamily(familyPrefix, timeout, onClose);
+      messages = await bridge.subscribeFamily(familyPrefix, timeout, onClose, afterId);
     }
     if (!res.writableEnded) res.json({ messages });
   } catch (err) {

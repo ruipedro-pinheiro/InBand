@@ -4,7 +4,7 @@ export interface JsonRpcLineTransport {
   close(): Promise<void>;
 }
 
-export type CodexWakeDisposition = "started" | "deferred-active-turn" | "failed";
+export type CodexWakeDisposition = "started" | "queued" | "deferred-active-turn" | "failed";
 
 export interface CodexWakeResult {
   disposition: CodexWakeDisposition;

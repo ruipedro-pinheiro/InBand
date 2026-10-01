@@ -1,12 +1,5 @@
-import {
-  createCodexAppServerTransport,
-  createCodexStdioTransport,
-  wakeCodexThread,
-  type CodexWakeResult,
-} from "./codex-app-server.ts";
+import type { CodexWakeResult } from "./codex-app-server.ts";
 import { normalizeLoopbackHttpBaseUrl } from "./config.ts";
-
-let proxyUnavailable = false;
 
 export interface OpencodeWakeTarget {
   type: "opencode";
@@ -87,32 +80,34 @@ export async function wakeCodex(
   input: { sessionId: string; mailbox: string; prompt: string; timeoutMs?: number },
 ): Promise<CodexWakeResult> {
   const timeoutMs = input.timeoutMs ?? 5000;
-  const wakeInput = { ...input, timeoutMs };
   try {
-    if (!proxyUnavailable) {
-      const transport = await createCodexAppServerTransport(command, timeoutMs);
-      const result = await wakeCodexThread(transport, wakeInput);
-      if (
-        result.disposition !== "failed" ||
-        (!result.detail.includes("initialize failed: timeout") &&
-          !result.detail.includes("proxy exited early"))
-      ) {
-        return result;
-      }
-      proxyUnavailable = true;
-    }
-
-    // stdio JSONL fallback, some Codex builds cannot attach via the proxy command
-    return wakeCodexThread(createCodexStdioTransport(command), wakeInput);
-  } catch (error) {
-    try {
-      proxyUnavailable = true;
-      return wakeCodexThread(createCodexStdioTransport(command), wakeInput);
-    } catch (fallbackError) {
+    const prompt = input.prompt.includes("{mailbox}")
+      ? input.prompt.replaceAll("{mailbox}", input.mailbox)
+      : `${input.prompt}\n\nMailbox: ${input.mailbox}`;
+    const child = Bun.spawn([command, "queue", "--thread", input.sessionId, "--message", prompt], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]).finally(() => clearTimeout(timer));
+    if (timedOut) return { disposition: "failed", detail: "codex queue failed: timeout" };
+    if (code !== 0) {
       return {
         disposition: "failed",
-        detail: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        detail: `codex queue failed (${code}): ${(stderr || stdout).trim().slice(0, 4096)}`,
       };
     }
+    return { disposition: "queued", detail: `queued wake for ${input.mailbox}` };
+  } catch (error) {
+    return { disposition: "failed", detail: error instanceof Error ? error.message : String(error) };
   }
 }
