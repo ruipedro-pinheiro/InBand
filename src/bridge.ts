@@ -1,12 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { agentMatchesPattern, type AuthConfig } from "./auth.ts";
 import { CODEX_FAMILY, CodexSessionRegistry } from "./codex-session.ts";
-import type { CodexWakeResult } from "./codex-app-server.ts";
 import type { MessageRow } from "./db.ts";
 import type { AgentRole } from "./protocol.ts";
 import {
   wakeCodex,
   wakeOpencode,
+  type CodexWakeResult,
   type CodexWakeTarget,
   type WakeTarget,
 } from "./wake.ts";

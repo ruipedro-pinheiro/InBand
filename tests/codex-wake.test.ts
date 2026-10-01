@@ -6,7 +6,7 @@ import {
   type WakeDispatchInput,
 } from "../src/bridge.ts";
 import { CodexSessionRegistry } from "../src/codex-session.ts";
-import type { CodexWakeResult } from "../src/codex-app-server.ts";
+import type { CodexWakeResult } from "../src/wake.ts";
 import { wakeOpencode, type WakeTarget } from "../src/wake.ts";
 import { testDb } from "./helpers.ts";
 

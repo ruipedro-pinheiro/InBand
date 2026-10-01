@@ -1,5 +1,11 @@
-import type { CodexWakeResult } from "./codex-app-server.ts";
 import { normalizeLoopbackHttpBaseUrl } from "./config.ts";
+
+export type CodexWakeDisposition = "started" | "queued" | "deferred-active-turn" | "failed";
+
+export interface CodexWakeResult {
+  disposition: CodexWakeDisposition;
+  detail: string;
+}
 
 export interface OpencodeWakeTarget {
   type: "opencode";
