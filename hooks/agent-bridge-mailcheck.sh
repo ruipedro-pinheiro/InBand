@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PostToolUse hook: remind a WORKING session that agent-bridge mail is waiting.
-# Read-only check via /health (get_messages would mark messages as read).
+# Read-only check: the daemon peeks at unread mail and does not mark it as read.
 # Rate-limited per identity so it never spams the context.
 set -euo pipefail
 
@@ -25,30 +25,8 @@ if [ -f "$stamp" ]; then
 fi
 printf '%s\n' "$now" > "$stamp"
 
-health_url="http://127.0.0.1:7447/health"
-agent_bridge_sign_request GET "$health_url"
-health=$(curl -s -m 2 "${AGENT_BRIDGE_CURL_AUTH[@]}" "$health_url" 2>/dev/null) || exit 0
-
-python3 - "$health" "$name" <<'PY'
-import json, sys
-
-try:
-    health = json.loads(sys.argv[1])
-except json.JSONDecodeError:
-    sys.exit(0)
-name = sys.argv[2]
-
-unread = next((a.get("unread", 0) for a in health.get("agents", []) if a.get("name") == name), 0)
-if unread > 0:
-    context = (
-        f"{unread} unread agent-bridge message(s) are waiting in the mailbox `{name}`. "
-        f'They can be read with the agent-bridge tool get_messages (for: "{name}"); '
-        f"replies go through send_message to the exact sender name."
-    )
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": context,
-        }
-    }))
-PY
+hook_url="http://127.0.0.1:7447/claude/hook?agent=${name}&event=PostToolUse"
+agent_bridge_sign_request GET "$hook_url"
+output=$(curl -sf -m 2 "${AGENT_BRIDGE_CURL_AUTH[@]}" "$hook_url" 2>/dev/null) || exit 0
+# The daemon answers {} when no mail waits.
+[ "$output" = "{}" ] || printf '%s\n' "$output"

@@ -1,4 +1,5 @@
 import type { Bridge } from "./bridge.ts";
+import { protocolText } from "./protocol.ts";
 import {
   canonicalCodexMailbox,
   type CodexSessionRegistry,
@@ -54,7 +55,8 @@ export function handleCodexHook(
           hookEventName: "SessionStart",
           additionalContext:
             `Your canonical agent-bridge mailbox is \`${mailbox}\`. ` +
-            `Use it for the MCP \`from\` field: \`${mailbox}\`, and for the MCP \`for\` field: \`${mailbox}\`.`,
+            `Use it for the MCP \`from\` field: \`${mailbox}\`, and for the MCP \`for\` field: \`${mailbox}\`.\n\n` +
+            protocolText(bridge.roleOf(mailbox), mailbox, bridge.getLead()),
         },
       },
     };
@@ -76,7 +78,7 @@ export function handleCodexHook(
     body: {
       decision: "block",
       reason:
-        `Unread agent-bridge mail is queued for ${mailbox}. ` +
+        `Unread agent-bridge mail from another agent, not from the user, is queued for ${mailbox}. ` +
         `Call get_messages with for=\"${mailbox}\" and handle it before stopping.`,
     },
   };

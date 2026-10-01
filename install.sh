@@ -148,6 +148,26 @@ if [ "$DO_HOOKS" = 1 ]; then
     ' "$SETTINGS" "$CLAUDE_DIR/hooks"
     say "backup kept at $SETTINGS.bak"
   fi
+
+  step "Installing /lead commands"
+  install_command() {
+    local client="$1" config_dir="$2" target_dir="$3"
+    if [ ! -d "$config_dir" ]; then
+      say "$client: no $config_dir, skipping"
+      return
+    fi
+    mkdir -p "$target_dir"
+    local target="$target_dir/lead.md"
+    if [ -f "$target" ] && ! cmp -s "$ROOT/commands/$client/lead.md" "$target"; then
+      say "$client: $target exists and differs, left untouched"
+      return
+    fi
+    cp "$ROOT/commands/$client/lead.md" "$target"
+    say "$client: installed $target"
+  }
+  install_command claude "$CLAUDE_DIR" "$CLAUDE_DIR/commands"
+  install_command codex "$HOME/.codex" "$HOME/.codex/prompts"
+  install_command opencode "$HOME/.config/opencode" "$HOME/.config/opencode/commands"
 fi
 
 if [ "$DO_SERVICE" = 1 ]; then

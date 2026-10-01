@@ -21,6 +21,8 @@ import { Bridge, type BridgeConfig } from "./bridge.ts";
 import { handleCodexHook } from "./codex-hook.ts";
 import { CodexSessionRegistry } from "./codex-session.ts";
 import { isLoopbackBindHost, loadBridgeConfigFromText, resolveBindHost } from "./config.ts";
+import { claudeHookOutput } from "./claude-hook.ts";
+import { protocolText } from "./protocol.ts";
 import { loadTokenEnvFile } from "./token-env.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -274,6 +276,27 @@ function buildServer(): McpServer {
   );
 
   server.registerTool(
+    "claim_lead",
+    {
+      description:
+        "Make your session the lead. Call this only when the user asks for it (for example with /lead). " +
+        "The previous lead gets a notice. Returns the lead protocol to follow.",
+      inputSchema: {
+        from: z.string().describe("Your exact agent mailbox"),
+      },
+    },
+    async ({ from }, extra) => {
+      try {
+        assertAgentAuthorized(authFromExtra(extra), bridge.normalizeAgent(from, "from"), "from");
+        const { lead, previous } = bridge.setLead(from);
+        return asText({ lead, previous, protocol: protocolText("lead", lead, lead) });
+      } catch (err) {
+        return asError(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "clear_conversation",
     {
       description: 'Delete ALL messages and delivery records. Destructive: requires confirm="wipe".',
@@ -372,6 +395,18 @@ app.get("/subscribe", async (req: ExpressRequest, res: ExpressResponse) => {
     if (!res.headersSent) {
       res.status(400).json({ error: String(err instanceof Error ? err.message : err) });
     }
+  }
+});
+
+// Claude Code hooks print this body as their output, so the hook scripts need no JSON tooling.
+app.get("/claude/hook", (req: ExpressRequest, res: ExpressResponse) => {
+  try {
+    const agent = bridge.normalizeAgent(singleQueryParam(req.query.agent, "agent") ?? "", "agent");
+    const event = singleQueryParam(req.query.event, "event");
+    assertAgentAuthorized(req.auth, agent, "agent");
+    res.json(claudeHookOutput(bridge, agent, event));
+  } catch (err) {
+    res.status(400).json({ error: String(err instanceof Error ? err.message : err) });
   }
 });
 

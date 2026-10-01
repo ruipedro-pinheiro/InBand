@@ -31,6 +31,7 @@ interface Row {
   recipient: string;
   content: string;
   created_at: string;
+  sender_role?: string | null;
 }
 
 let afterId = 0;
@@ -82,7 +83,13 @@ while (true) {
         method: "notifications/claude/channel",
         params: {
           content: m.content,
-          meta: { from: m.sender, to: m.recipient, sent_at: m.created_at },
+          meta: {
+            from: m.sender,
+            from_role: m.sender_role ?? "worker",
+            to: m.recipient,
+            reply_via: "send_message",
+            sent_at: m.created_at,
+          },
         },
       });
     }

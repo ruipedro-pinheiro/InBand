@@ -8,6 +8,8 @@ export interface MessageRow {
   recipient: string;
   content: string;
   created_at: string;
+  /** Role of the sender when the message was sent. Null for messages sent before roles existed. */
+  sender_role: "lead" | "worker" | null;
 }
 
 export function openDb(path: string): Database {
@@ -63,7 +65,16 @@ export function openDb(path: string): Database {
     );
     CREATE INDEX IF NOT EXISTS idx_codex_sessions_recent
       ON codex_sessions(family, last_seen DESC);
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+  const messageColumns = db.query(`PRAGMA table_info(messages)`).all() as { name: string }[];
+  if (!messageColumns.some((column) => column.name === "sender_role")) {
+    db.exec(`ALTER TABLE messages ADD COLUMN sender_role TEXT`);
+  }
   if (path !== ":memory:") {
     for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
       if (existsSync(candidate)) chmodSync(candidate, 0o600);

@@ -3,6 +3,7 @@ import { agentMatchesPattern, type AuthConfig } from "./auth.ts";
 import { CODEX_FAMILY, CodexSessionRegistry } from "./codex-session.ts";
 import type { CodexWakeResult } from "./codex-app-server.ts";
 import type { MessageRow } from "./db.ts";
+import type { AgentRole } from "./protocol.ts";
 import {
   wakeCodex,
   wakeOpencode,
@@ -158,24 +159,34 @@ export class Bridge {
         recipients = [resolvedTo];
       }
 
+      const senderRole = this.roleOf(from);
       const { lastInsertRowid } = this.db
-        .query(`INSERT INTO messages(sender, recipient, content, created_at) VALUES (?1, ?2, ?3, ?4)`)
-        .run(from, resolvedTo, content, now);
+        .query(
+          `INSERT INTO messages(sender, recipient, content, created_at, sender_role) VALUES (?1, ?2, ?3, ?4, ?5)`,
+        )
+        .run(from, resolvedTo, content, now, senderRole);
       const id = Number(lastInsertRowid);
       const deliver = this.db.query(
         `INSERT INTO deliveries(message_id, recipient, read_at) VALUES (?1, ?2, NULL)`,
       );
       for (const r of recipients) deliver.run(id, r);
-      return { messageId: id, resolvedTo, recipients };
+      return { messageId: id, resolvedTo, recipients, senderRole };
     });
-    const { messageId, resolvedTo, recipients } = routeAndInsert();
+    const { messageId, resolvedTo, recipients, senderRole } = routeAndInsert();
 
     if (this.familyWaiters.length > 0) {
       const remaining: FamilyWaiter[] = [];
       for (const fw of this.familyWaiters) {
         const rows: MessageRow[] = recipients
           .filter((r) => messageId > fw.afterId && (r === fw.prefix || (!fw.exact && r.startsWith(fw.prefix + "-"))))
-          .map((r) => ({ id: messageId, sender: from, recipient: r, content, created_at: now }));
+          .map((r) => ({
+            id: messageId,
+            sender: from,
+            recipient: r,
+            content,
+            created_at: now,
+            sender_role: senderRole,
+          }));
         if (rows.length > 0) {
           clearTimeout(fw.timer);
           fw.resolve(rows);
@@ -213,6 +224,37 @@ export class Bridge {
     };
   }
 
+  getLead(): string | null {
+    const row = this.db.query(`SELECT value FROM settings WHERE key = 'lead'`).get() as { value: string } | null;
+    return row?.value ?? null;
+  }
+
+  roleOf(name: string): AgentRole {
+    return this.getLead() === name ? "lead" : "worker";
+  }
+
+  // The user picks the lead. The previous lead gets a notice so it stops acting as lead.
+  setLead(mailboxRaw: string): { lead: string; previous: string | null } {
+    const mailbox = this.normalizeAgent(mailboxRaw, "from");
+    this.touchAgent(mailbox);
+    const previous = this.getLead();
+    this.db
+      .query(
+        `INSERT INTO settings(key, value, updated_at) VALUES ('lead', ?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?2`,
+      )
+      .run(mailbox, this.runtime.now().toISOString());
+    if (previous && previous !== mailbox) {
+      try {
+        this.send(mailbox, previous, `${mailbox} is now the lead. You are a worker from now on.`);
+      } catch (error) {
+        // A previous lead whose Codex session is gone cannot receive mail. The change still applies.
+        console.error(`[lead] could not notify ${previous}:`, error instanceof Error ? error.message : error);
+      }
+    }
+    return { lead: mailbox, previous: previous === mailbox ? null : previous };
+  }
+
   private touchAgentIfNew(name: string): void {
     const now = new Date().toISOString();
     this.db
@@ -244,7 +286,7 @@ export class Bridge {
     this.touchAgent(recipient);
     return this.db
       .query(
-        `SELECT m.id, m.sender, m.recipient, m.content, m.created_at
+        `SELECT m.id, m.sender, m.recipient, m.content, m.created_at, m.sender_role
          FROM deliveries d JOIN messages m ON m.id = d.message_id
          WHERE d.recipient = ?1 AND d.read_at IS NULL
          ORDER BY m.id ASC`,
@@ -259,7 +301,7 @@ export class Bridge {
     const read = this.db.transaction(() => {
       const rows = this.db
         .query(
-          `SELECT m.id, m.sender, m.recipient, m.content, m.created_at
+          `SELECT m.id, m.sender, m.recipient, m.content, m.created_at, m.sender_role
            FROM deliveries d JOIN messages m ON m.id = d.message_id
            WHERE d.recipient = ?1 AND d.read_at IS NULL
            ORDER BY m.id ASC`,
@@ -364,7 +406,7 @@ export class Bridge {
     if (afterId !== undefined) {
       if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error("invalid after_id");
       const queued = this.db.query(
-        `SELECT m.id, m.sender, d.recipient, m.content, m.created_at
+        `SELECT m.id, m.sender, d.recipient, m.content, m.created_at, m.sender_role
          FROM deliveries d JOIN messages m ON m.id = d.message_id
          WHERE d.read_at IS NULL AND m.id > ?1
            AND (d.recipient = ?2 OR (?3 = 0 AND substr(d.recipient, 1, length(?2) + 1) = ?2 || '-'))
@@ -596,13 +638,13 @@ export class Bridge {
       beforeId
         ? this.db
             .query(
-              `SELECT id, sender, recipient, content, created_at FROM messages
+              `SELECT id, sender, recipient, content, created_at, sender_role FROM messages
                WHERE id < ?1 ORDER BY id DESC LIMIT ?2`,
             )
             .all(beforeId, capped)
         : this.db
             .query(
-              `SELECT id, sender, recipient, content, created_at FROM messages
+              `SELECT id, sender, recipient, content, created_at, sender_role FROM messages
                ORDER BY id DESC LIMIT ?1`,
             )
             .all(capped)
@@ -633,6 +675,7 @@ export class Bridge {
   // visiblePatterns selects the listed agents. wakePatterns selects the wake log, which stays scoped to mailbox access.
   status(fromRaw?: string, visiblePatterns?: string[], wakePatterns: string[] | undefined = visiblePatterns) {
     if (fromRaw) this.touchAgent(this.normalizeAgent(fromRaw, "from"));
+    const lead = this.getLead();
     const agents = (
       this.db.query(`SELECT name, first_seen, last_seen FROM agents ORDER BY name`).all() as {
         name: string;
@@ -666,6 +709,7 @@ export class Bridge {
                 lifecycle: codexSession.lifecycle,
               }
             : {}),
+          role: a.name === lead ? "lead" : "worker",
           connected,
           idle_seconds: idleSeconds,
           waiting_now: waitingNow,
@@ -684,7 +728,7 @@ export class Bridge {
         wakePatterns.some((pattern) => agentMatchesPattern(wake.recipient, pattern)),
       );
     }
-    return { daemon: "agent-bridge", startedAt: this.startedAt, agents, lastWakes };
+    return { daemon: "agent-bridge", startedAt: this.startedAt, lead, agents, lastWakes };
   }
 
   clear(confirm: string) {

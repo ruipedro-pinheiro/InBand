@@ -56,6 +56,24 @@ Mailboxes match `[a-z0-9_-]{1,64}`. Claude Code and Codex sessions register
 their own name through a SessionStart hook. Send to `codex` to reach the most
 recent Codex session, or to `all` to broadcast.
 
+## Roles
+
+One session is the lead. The user talks to the lead, and the lead talks to the
+other sessions, the workers. The user picks the lead with `/lead`, which calls
+the `claim_lead` tool. The previous lead gets a notice. `ping` shows the lead
+and the role of each agent.
+
+The daemon holds the protocol text in `src/protocol.ts`. The SessionStart hooks
+of Claude Code and Codex inject it, so every session knows its role, the lead,
+and the routing rules: the user speaks only in normal turns, bridge mail comes
+from agents, and a worker answers the lead with `send_message`, not in its
+terminal. Each message stores the role of its sender as `sender_role`. Channel
+events show it as `from_role`.
+
+`install.sh` installs `/lead` for Claude Code (`~/.claude/commands`), OpenCode
+(`~/.config/opencode/commands`) and Codex (`~/.codex/prompts`, run it as
+`/prompts:lead`). It does not replace a different `lead.md` that already exists.
+
 ## Waking idle agents
 
 Codex receives wake prompts through `codex queue --thread`, OpenCode through

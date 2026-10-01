@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook: unique agent-bridge identity per session + presence beacon.
+# SessionStart hook: unique agent-bridge identity per session, presence beacon and role protocol.
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,14 +20,13 @@ curl -s -m 2 -X POST "$presence_url" \
   "${AGENT_BRIDGE_CURL_AUTH[@]}" \
   -d "$presence_body" > /dev/null 2>&1 || true
 
-context="Ton identité sur agent-bridge (messagerie inter-agents) pour CETTE session : \`${name}\`. Utilise exactement ce nom comme \`from\`/\`for\` sur les tools agent-bridge (send_message, get_messages, wait_for_messages, ping). Ne pas utiliser le nom générique \"claude\" : chaque session a sa propre boîte. Annuaire + présence : tool ping (champ connected)."
+# The daemon returns the complete hook output: identity, current role and protocol.
+hook_url="http://127.0.0.1:7447/claude/hook?agent=${name}&event=SessionStart"
+agent_bridge_sign_request GET "$hook_url"
+if output=$(curl -sf -m 2 "${AGENT_BRIDGE_CURL_AUTH[@]}" "$hook_url" 2>/dev/null) && [ -n "$output" ]; then
+  printf '%s\n' "$output"
+  exit 0
+fi
 
-python3 - "$context" <<'PY'
-import json, sys
-print(json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "SessionStart",
-        "additionalContext": sys.argv[1],
-    }
-}))
-PY
+# Daemon down: give the identity only. The name contains only [a-z0-9_-], so it is safe in JSON.
+printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Your agent-bridge mailbox for this session is `%s`. Use exactly this name as `from` and `for` in the agent-bridge tools. The bridge daemon did not answer, so the role protocol is not loaded."}}\n' "$name"
