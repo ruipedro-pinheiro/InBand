@@ -4,15 +4,23 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/bun-%E2%89%A51.3-black)](https://bun.sh)
 
-[Install](#install) · [Usage](#usage) · [Reference](docs/reference.md)
+[Install](#install) · [Example](#example) · [Reference](docs/reference.md)
 
-agent-bridge is a local MCP server that lets Claude Code, Codex and OpenCode
-sessions send messages to each other. You talk to one session, the lead, and
-the lead hands work to the other sessions through the bridge.
+agent-bridge is a message bus for coding agents. It runs as one local MCP
+daemon. Claude Code, Codex and OpenCode sessions use it to send tasks and
+results to each other.
+
+```
+send_message        # send to a mailbox, to "codex" (latest Codex session) or to "all"
+wait_for_messages   # block until mail arrives
+get_messages        # read the unread mail and mark it as read
+ping                # list the agents, their roles and their unread mail
+claim_lead          # make this session the lead (/lead)
+```
 
 ```mermaid
 flowchart LR
-    user([You]) --- lead["Claude Code<br/>lead"]
+    user([User]) --- lead["Claude Code<br/>lead"]
     lead <-->|MCP| daemon[("agent-bridge<br/>daemon + SQLite")]
     daemon <-->|MCP + channel| w1["Claude Code<br/>worker"]
     daemon <-->|MCP + codex queue| w2["Codex<br/>worker"]
@@ -21,28 +29,25 @@ flowchart LR
 
 ## Features
 
-- **Mailboxes.** Each Claude Code and Codex session has its own mailbox.
-  OpenCode has one fixed mailbox, so one OpenCode session at a time.
-- **Delivery to idle sessions.** Claude Code receives mail through a channel,
-  Codex through `codex queue` (a Codex CLI with `queue` is required) and
-  OpenCode through its HTTP API.
-- **Lead and workers.** `/lead` selects the session that talks to you. Claude
-  Code and Codex sessions get their role and the routing rules when they start.
-- **Persistent mail.** Messages are stored in SQLite and stay unread until the
-  recipient reads them.
-- **Local and authenticated.** The daemon listens on loopback. Each client
-  family has its own token.
+- **Session mailboxes**: each Claude Code and Codex session gets a mailbox.
+  SQLite stores the mail. Mail stays unread until `get_messages`.
+- **Idle wake-up**: a channel for Claude Code, `codex queue` for Codex,
+  `prompt_async` for OpenCode.
+- **Lead and workers**: `/lead` selects the lead. The SessionStart hooks inject
+  the role and the routing rules into each session.
+- **Local auth**: loopback bind, one token per client family, HMAC-signed hook
+  requests.
 
-## Usage
+## Example
 
-The agents call the MCP tools themselves. Here the lead calls `send_message`:
+The lead calls `send_message`:
 
 ```
 send_message(from: "claude-api-a1b2", to: "claude-web-c3d4",
              content: "Run the test suite and report the failures.")
 ```
 
-The worker is idle. The channel inserts the message into its session:
+The channel adds the message to the idle worker session:
 
 ```xml
 <channel source="agent-bridge-channel" from="claude-api-a1b2" from_role="lead"
@@ -51,29 +56,19 @@ Run the test suite and report the failures.
 </channel>
 ```
 
-The worker runs the tests and replies with `send_message` to
-`claude-api-a1b2`. The reply reaches the lead the same way.
+The worker sends the result to the lead with `send_message`.
 
 ## Install
 
-Requirements: Linux, [Bun](https://bun.sh) 1.3 or later, bash 4.4 or later,
-`python3` and `curl`. systemd is optional.
-
-### 1. Install the daemon
+Linux, Bun 1.3+, bash 4.4+, `python3`, `curl`.
 
 ```sh
 git clone https://github.com/ruipedro-pinheiro/agent-bridge ~/.local/share/mcp-servers/agent-bridge
 cd ~/.local/share/mcp-servers/agent-bridge
-./install.sh
+./install.sh    # tokens, config, hooks, /lead, systemd user unit
 ```
 
-The installer creates `tokens.env` and `config.json`, installs the hooks of
-Claude Code and Codex and the `/lead` commands, and starts a systemd user
-service. See the [installer options](docs/reference.md#installer).
-
-### 2. Connect your agents
-
-Load the tokens first:
+Load the tokens, then register each client:
 
 ```sh
 set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
@@ -87,11 +82,8 @@ claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/
   --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
 claude mcp add --scope user agent-bridge-channel -- \
   bun ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
-```
 
-Start Claude Code with the channel:
-
-```sh
+# start with the channel
 claude --dangerously-load-development-channels server:agent-bridge-channel
 ```
 
@@ -103,10 +95,12 @@ claude --dangerously-load-development-channels server:agent-bridge-channel
 ```sh
 codex mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
   --bearer-token-env-var AGENT_BRIDGE_CODEX_TOKEN
+
+# start from the shell that loaded tokens.env, then trust the agent-bridge hooks
+codex
 ```
 
-Start `codex` from a shell where `AGENT_BRIDGE_CODEX_TOKEN` is exported. On the
-first start, Codex asks you to trust the agent-bridge hooks.
+Wakes require a Codex CLI with the `queue` command.
 
 </details>
 
@@ -116,19 +110,18 @@ first start, Codex asks you to trust the agent-bridge hooks.
 ```sh
 opencode mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
   --header "Authorization=Bearer $AGENT_BRIDGE_OPENCODE_TOKEN"
+
+# the daemon wakes OpenCode on this port
+opencode --port 14096
 ```
 
-Start OpenCode with `opencode --port 14096` to let the daemon wake it.
+The daemon supports one OpenCode session at a time.
 
 </details>
 
-### 3. Choose the lead
+In the lead session, run `/lead` (`/prompts:lead` in Codex).
 
-Run `/lead` in the session you talk to. In Codex, the command is
-`/prompts:lead`.
-
-To use agents on a second machine through an SSH tunnel, see
-[Client machines](docs/reference.md#client-machines).
+Agents on a second machine: [client machines](docs/reference.md#client-machines).
 
 ## Uninstall
 
@@ -139,21 +132,20 @@ claude mcp remove agent-bridge-channel --scope user
 codex mcp remove agent-bridge
 ```
 
-Then remove the `agent-bridge` server from the OpenCode configuration, the
-agent-bridge entries from `~/.claude/settings.json` and `~/.codex/hooks.json`,
-the `lead.md` files, and the repository directory.
+Then remove the agent-bridge entries from `~/.claude/settings.json`,
+`~/.codex/hooks.json` and the OpenCode configuration.
 
 ## Documentation
 
-[docs/reference.md](docs/reference.md) covers the tools, the configuration,
-the environment variables, the security model and the known limits.
+[docs/reference.md](docs/reference.md): tools, configuration, environment
+variables, security model, limits.
 
 ## Development
 
 ```sh
-bun test
-bun run typecheck
-bun run prepublish:security
+bun test                      # tests
+bun run typecheck             # tsc
+bun run prepublish:security   # no tracked secrets, private files in mode 600
 ```
 
 ## License
