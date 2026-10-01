@@ -29,6 +29,13 @@ done
 say()  { printf '  %s\n' "$1"; }
 step() { printf '\n== %s\n' "$1"; }
 random_token() { bun -e 'console.log(require("crypto").randomBytes(32).toString("hex"))'; }
+# Some clients create their config directory only on first use. An installed binary is enough.
+prepare_client_dir() {
+  local binary="$1" dir="$2"
+  [ -d "$dir" ] && return 0
+  command -v "$binary" >/dev/null 2>&1 || return 1
+  mkdir -p "$dir"
+}
 load_tokens() {
   if [ -r "$ROOT/tokens.env" ]; then
     set -a
@@ -150,8 +157,8 @@ fi
 
 if [ "$DO_HOOKS" = 1 ]; then
   step "Installing Claude Code hooks"
-  if [ ! -d "$CLAUDE_DIR" ]; then
-    say "no $CLAUDE_DIR, skipping (use --no-hooks to silence this)"
+  if ! prepare_client_dir claude "$CLAUDE_DIR"; then
+    say "no $CLAUDE_DIR and no claude binary, skipping (use --no-hooks to silence this)"
   else
     mkdir -p "$CLAUDE_DIR/hooks"
     cp "$ROOT"/hooks/agent-bridge-*.sh "$CLAUDE_DIR/hooks/"
@@ -188,8 +195,8 @@ if [ "$DO_HOOKS" = 1 ]; then
   fi
 
   step "Installing Codex hooks"
-  if [ ! -d "$HOME/.codex" ]; then
-    say "no $HOME/.codex, skipping"
+  if ! prepare_client_dir codex "$HOME/.codex"; then
+    say "no $HOME/.codex and no codex binary, skipping"
   else
     CODEX_HOOKS="$HOME/.codex/hooks.json"
     [ -f "$CODEX_HOOKS" ] || echo '{}' > "$CODEX_HOOKS"
@@ -218,8 +225,8 @@ if [ "$DO_HOOKS" = 1 ]; then
   step "Installing /lead commands"
   install_command() {
     local client="$1" config_dir="$2" target_dir="$3"
-    if [ ! -d "$config_dir" ]; then
-      say "$client: no $config_dir, skipping"
+    if ! prepare_client_dir "$client" "$config_dir"; then
+      say "$client: no $config_dir and no $client binary, skipping"
       return
     fi
     mkdir -p "$target_dir"
@@ -267,7 +274,7 @@ cat <<'EOF'
     ~/.local/share/mcp-servers/agent-bridge/tokens.env
 
   Claude Code:
-    source ~/.local/share/mcp-servers/agent-bridge/tokens.env
+    set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
     claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
       --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
     claude mcp add --scope user agent-bridge-channel -- \
@@ -276,12 +283,12 @@ cat <<'EOF'
       --dangerously-load-development-channels server:agent-bridge-channel
 
   Codex:
-    source ~/.local/share/mcp-servers/agent-bridge/tokens.env
+    set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
     codex mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
       --bearer-token-env-var AGENT_BRIDGE_CODEX_TOKEN
 
   OpenCode:
-    source ~/.local/share/mcp-servers/agent-bridge/tokens.env
+    set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
     opencode mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
       --header "Authorization=Bearer $AGENT_BRIDGE_OPENCODE_TOKEN"
 
