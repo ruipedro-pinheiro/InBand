@@ -31,7 +31,7 @@ What the installer keeps:
   saved as `config.json.pre-auth.bak`. A file with `auth.required: false` stays
   as is, with a warning.
 - `~/.claude/settings.json` and `~/.codex/hooks.json`: it adds the missing
-  agent-bridge hooks and saves a `.bak` copy first.
+  InBand hooks and saves a `.bak` copy first.
 - `lead.md`: it does not replace a file that differs.
 
 The systemd unit uses the `bun` binary found in `PATH` at install time.
@@ -42,7 +42,7 @@ Names match `[a-z0-9_-]{1,64}`.
 
 | Client      | Mailbox                          | Set by                                   |
 | ----------- | -------------------------------- | ---------------------------------------- |
-| Claude Code | `claude-<dir>-<session prefix>`  | `hooks/agent-bridge-name.sh`             |
+| Claude Code | `claude-<dir>-<session prefix>`  | `hooks/inband-name.sh`             |
 | Codex       | `codex-<session uuid>`           | The daemon, on the Codex SessionStart hook |
 | OpenCode    | `opencode`                       | Fixed                                    |
 
@@ -90,12 +90,12 @@ the name of the lead and the rules in [`src/protocol.ts`](../src/protocol.ts).
 
 | Client      | Method                                                                    |
 | ----------- | ------------------------------------------------------------------------- |
-| Claude Code | The `agent-bridge-channel` MCP server pushes each message into the session |
+| Claude Code | The `inband-channel` MCP server pushes each message into the session |
 | Codex       | `codex queue --thread <id>`. The Codex CLI must support `queue`           |
 | OpenCode    | `POST /session/<id>/prompt_async` to the most recent root session         |
 
 Claude Code loads the channel only when it starts with
-`--dangerously-load-development-channels server:agent-bridge-channel`. The
+`--dangerously-load-development-channels server:inband-channel`. The
 channel reads the session registry of its parent process, so it follows the
 session after `/clear`. If it cannot verify the session, it stops delivery
 until it can. Unread mail replays after a reconnection. The channel event
@@ -106,7 +106,7 @@ wake leaves the mail unread. OpenCode must listen on the port of
 `wake.opencode.baseUrl`, for example with `opencode --port 14096`.
 
 On Windows, `scripts/setup-windows-channel.ps1` copies the channel files to
-`%LOCALAPPDATA%\agent-bridge-channel` and prints the `.claude.json` entry. That
+`%LOCALAPPDATA%\inband-channel` and prints the `.claude.json` entry. That
 entry uses a fixed mailbox from `-Mailbox`.
 
 ## Client machines
@@ -158,24 +158,24 @@ client see all agents.
 
 | Variable                             | Used by               | Description                                       |
 | ------------------------------------ | --------------------- | ------------------------------------------------- |
-| `AGENT_BRIDGE_<CLIENT>_TOKEN`        | All                   | Token of a client, for example `AGENT_BRIDGE_CLAUDE_TOKEN` |
-| `AGENT_BRIDGE_TOKEN`                 | Shim, Codex hook, hooks | Token used when the client variable is not set |
-| `AGENT_BRIDGE_TOKENS_FILE`           | All                   | Path of `tokens.env`                              |
-| `AGENT_BRIDGE_BIND`                  | Daemon                | Bind address: `127.0.0.1` (default), `localhost` or `::1` |
-| `AGENT_BRIDGE_UNSAFE_REMOTE_BIND`    | Daemon                | `1` allows a non-loopback bind address            |
-| `AGENT_BRIDGE_UNSAFE_REMOTE_URLS`    | Daemon, shim, Codex hook | `1` allows non-loopback wake and bridge URLs  |
-| `AGENT_BRIDGE_URL`                   | Shim                  | Daemon URL. Default `http://127.0.0.1:7447`       |
-| `AGENT_BRIDGE_MAILBOX`               | Shim                  | Fixed mailbox, for a shim outside Claude Code     |
-| `AGENT_BRIDGE_CLIENT_ID`             | Shim, Codex hook      | Token client to use. Default `claude` and `codex` |
-| `AGENT_BRIDGE_CODEX_HOOK_URL`        | Codex hook            | Default `http://127.0.0.1:7447/codex/hook`        |
-| `AGENT_BRIDGE_CODEX_HOOK_TIMEOUT_MS` | Codex hook            | Request timeout. Default 2000                     |
+| `INBAND_<CLIENT>_TOKEN`        | All                   | Token of a client, for example `INBAND_CLAUDE_TOKEN` |
+| `INBAND_TOKEN`                 | Shim, Codex hook, hooks | Token used when the client variable is not set |
+| `INBAND_TOKENS_FILE`           | All                   | Path of `tokens.env`                              |
+| `INBAND_BIND`                  | Daemon                | Bind address: `127.0.0.1` (default), `localhost` or `::1` |
+| `INBAND_UNSAFE_REMOTE_BIND`    | Daemon                | `1` allows a non-loopback bind address            |
+| `INBAND_UNSAFE_REMOTE_URLS`    | Daemon, shim, Codex hook | `1` allows non-loopback wake and daemon URLs  |
+| `INBAND_URL`                   | Shim                  | Daemon URL. Default `http://127.0.0.1:7447`       |
+| `INBAND_MAILBOX`               | Shim                  | Fixed mailbox, for a shim outside Claude Code     |
+| `INBAND_CLIENT_ID`             | Shim, Codex hook      | Token client to use. Default `claude` and `codex` |
+| `INBAND_CODEX_HOOK_URL`        | Codex hook            | Default `http://127.0.0.1:7447/codex/hook`        |
+| `INBAND_CODEX_HOOK_TIMEOUT_MS` | Codex hook            | Request timeout. Default 2000                     |
 | `CLAUDE_CONFIG_DIR`                  | Installer, shim       | Claude Code configuration directory. Default `~/.claude` |
 
 `tokens.env` contains `NAME=value` lines without `export`. To give the Codex
 token to Codex, export it in the environment that starts `codex`:
 
 ```sh
-set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
+set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
 codex
 ```
 
@@ -213,8 +213,8 @@ and monitoring.
 ## Limits
 
 - The hooks, the Codex hook and the installer health check use port 7447. If
-  you change `port`, also set `AGENT_BRIDGE_URL` and
-  `AGENT_BRIDGE_CODEX_HOOK_URL`, and edit the URLs in `hooks/*.sh`.
+  you change `port`, also set `INBAND_URL` and
+  `INBAND_CODEX_HOOK_URL`, and edit the URLs in `hooks/*.sh`.
 - One lead for all sessions of the daemon.
 - After `/clear` in Claude Code, the mailbox changes. Run `/lead` again if that
   session was the lead.

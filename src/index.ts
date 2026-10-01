@@ -14,7 +14,7 @@ import {
   directoryAgentPatterns,
   disabledAuthInfo,
   visibleAgentPatterns,
-  type AgentBridgeAuthInfo,
+  type InbandAuthInfo,
 } from "./auth.ts";
 import { openDb } from "./db.ts";
 import { Bridge, type BridgeConfig } from "./bridge.ts";
@@ -36,14 +36,14 @@ function loadConfig(): BridgeConfig {
   try {
     raw = readFileSync(path, "utf8");
   } catch {
-    console.error(`agent-bridge: no config file at ${path}`);
+    console.error(`inband: no config file at ${path}`);
     console.error("Run: cp config.example.json config.json");
     process.exit(1);
   }
   try {
     return loadBridgeConfigFromText(raw);
   } catch (err) {
-    console.error(`agent-bridge: ${path} is not valid`);
+    console.error(`inband: ${path} is not valid`);
     console.error(String(err));
     process.exit(1);
   }
@@ -67,8 +67,8 @@ function asError(err: unknown) {
   };
 }
 
-function authFromExtra(extra: { authInfo?: unknown } | undefined): AgentBridgeAuthInfo {
-  const authInfo = extra?.authInfo as AgentBridgeAuthInfo | undefined;
+function authFromExtra(extra: { authInfo?: unknown } | undefined): InbandAuthInfo {
+  const authInfo = extra?.authInfo as InbandAuthInfo | undefined;
   if (auth.required && !authInfo) throw new Error("missing authenticated request context");
   return authInfo ?? disabledAuthInfo();
 }
@@ -120,7 +120,7 @@ function timeoutQueryParam(value: unknown, fallback: number): number {
 }
 
 function buildServer(): McpServer {
-  const server = new McpServer({ name: "agent-bridge", version: "1.0.0" });
+  const server = new McpServer({ name: "inband", version: "1.0.0" });
 
   server.registerTool(
     "send_message",
@@ -129,7 +129,7 @@ function buildServer(): McpServer {
         'Send to an exact agent mailbox, the "codex" most-recent-session alias, or "all" to broadcast. ' +
         "Use exact codex-<full-session-uuid> targeting when multiple Codex sessions are registered. " +
         "Delivery is persistent: the recipient gets it on its next get_messages/wait_for_messages call. " +
-        "If the recipient is idle and wake is configured, the bridge starts a turn on its side automatically.",
+        "If the recipient is idle and wake is configured, the daemon starts a turn on its side automatically.",
       inputSchema: {
         from: z.string().describe('Your exact agent mailbox (Codex uses "codex-<full-session-uuid>")'),
         to: z.string().describe('Exact mailbox, "codex" alias, or "all" broadcast'),
@@ -259,7 +259,7 @@ function buildServer(): McpServer {
     "ping",
     {
       description:
-        "Bridge status: known agents, Codex labels/cwd/lifecycle, waiters, unread counts, and recent wakes.",
+        "Daemon status: known agents, Codex labels/cwd/lifecycle, waiters, unread counts, and recent wakes.",
       inputSchema: {
         from: z.string().optional().describe("Your agent name (updates your last_seen)"),
       },
@@ -319,7 +319,7 @@ function buildServer(): McpServer {
 
 const bindHost = resolveBindHost();
 if (!isLoopbackBindHost(bindHost) && !auth.required) {
-  console.error("agent-bridge: refusing non-loopback bind while auth is disabled");
+  console.error("inband: refusing non-loopback bind while auth is disabled");
   process.exit(1);
 }
 
@@ -426,6 +426,6 @@ app.post("/presence", (req: ExpressRequest, res: ExpressResponse) => {
 });
 
 app.listen(config.port, bindHost, () => {
-  console.error(`agent-bridge listening on http://${bindHost}:${config.port}/mcp`);
+  console.error(`inband listening on http://${bindHost}:${config.port}/mcp`);
   bridge.reconcileCodexWakes();
 });

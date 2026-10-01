@@ -1,12 +1,12 @@
-# agent-bridge
+# InBand
 
-[![CI](https://github.com/ruipedro-pinheiro/agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ruipedro-pinheiro/agent-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/ruipedro-pinheiro/InBand/actions/workflows/ci.yml/badge.svg)](https://github.com/ruipedro-pinheiro/InBand/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/bun-%E2%89%A51.3-black)](https://bun.sh)
 
 [Install](#install) · [Example](#example) · [Reference](docs/reference.md)
 
-agent-bridge is a message bus for coding agents. It runs as one local MCP
+InBand is a message bus for coding agents. It runs as one local MCP
 daemon. Claude Code, Codex and OpenCode sessions use it to send tasks and
 results to each other.
 
@@ -23,7 +23,7 @@ claim_lead          # make this session the lead (/lead)
 ```mermaid
 flowchart LR
     user([User]) --- lead["Claude Code<br/>lead"]
-    lead <-->|MCP| daemon[("agent-bridge<br/>daemon + SQLite")]
+    lead <-->|MCP| daemon[("InBand<br/>daemon + SQLite")]
     daemon <-->|MCP + channel| w1["Claude Code<br/>worker"]
     daemon <-->|MCP + codex queue| w2["Codex<br/>worker"]
     daemon <-->|MCP + prompt_async| w3["OpenCode<br/>worker"]
@@ -52,7 +52,7 @@ send_message(from: "claude-api-a1b2", to: "claude-web-c3d4",
 The channel adds the message to the idle worker session:
 
 ```xml
-<channel source="agent-bridge-channel" from="claude-api-a1b2" from_role="lead"
+<channel source="inband-channel" from="claude-api-a1b2" from_role="lead"
          to="claude-web-c3d4" reply_via="send_message" sent_at="2026-10-01T20:47:58.816Z">
 Run the test suite and report the failures.
 </channel>
@@ -65,28 +65,28 @@ The worker sends the result to the lead with `send_message`.
 Linux, Bun 1.3+, bash 4.4+, `python3`, `curl`.
 
 ```sh
-git clone https://github.com/ruipedro-pinheiro/agent-bridge ~/.local/share/mcp-servers/agent-bridge
-cd ~/.local/share/mcp-servers/agent-bridge
+git clone https://github.com/ruipedro-pinheiro/InBand ~/.local/share/mcp-servers/inband
+cd ~/.local/share/mcp-servers/inband
 ./install.sh    # tokens, config, hooks, /lead, systemd user unit
 ```
 
 Load the tokens, then register each client:
 
 ```sh
-set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
+set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
 ```
 
 <details>
 <summary>Claude Code</summary>
 
 ```sh
-claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
-  --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
-claude mcp add --scope user agent-bridge-channel -- \
-  "$(command -v bun)" ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
+claude mcp add --scope user --transport http inband http://127.0.0.1:7447/mcp \
+  --header "Authorization: Bearer $INBAND_CLAUDE_TOKEN"
+claude mcp add --scope user inband-channel -- \
+  "$(command -v bun)" ~/.local/share/mcp-servers/inband/src/channel-shim.ts
 
 # start with the channel
-claude --dangerously-load-development-channels server:agent-bridge-channel
+claude --dangerously-load-development-channels server:inband-channel
 ```
 
 </details>
@@ -95,10 +95,10 @@ claude --dangerously-load-development-channels server:agent-bridge-channel
 <summary>Codex</summary>
 
 ```sh
-codex mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
-  --bearer-token-env-var AGENT_BRIDGE_CODEX_TOKEN
+codex mcp add inband --url http://127.0.0.1:7447/mcp \
+  --bearer-token-env-var INBAND_CODEX_TOKEN
 
-# start from the shell that loaded tokens.env, then trust the agent-bridge hooks
+# start from the shell that loaded tokens.env, then trust the InBand hooks
 codex
 ```
 
@@ -110,8 +110,8 @@ Wakes require a Codex CLI with the `queue` command.
 <summary>OpenCode</summary>
 
 ```sh
-opencode mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
-  --header "Authorization=Bearer $AGENT_BRIDGE_OPENCODE_TOKEN"
+opencode mcp add inband --url http://127.0.0.1:7447/mcp \
+  --header "Authorization=Bearer $INBAND_OPENCODE_TOKEN"
 
 # the daemon wakes OpenCode on this port
 opencode --port 14096
@@ -128,13 +128,13 @@ Agents on a second machine: [client machines](docs/reference.md#client-machines)
 ## Uninstall
 
 ```sh
-systemctl --user disable --now agent-bridge
-claude mcp remove agent-bridge --scope user
-claude mcp remove agent-bridge-channel --scope user
-codex mcp remove agent-bridge
+systemctl --user disable --now inband
+claude mcp remove inband --scope user
+claude mcp remove inband-channel --scope user
+codex mcp remove inband
 ```
 
-Then remove the agent-bridge entries from `~/.claude/settings.json`,
+Then remove the InBand entries from `~/.claude/settings.json`,
 `~/.codex/hooks.json` and the OpenCode configuration.
 
 ## Documentation

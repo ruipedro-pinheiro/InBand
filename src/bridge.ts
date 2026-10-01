@@ -734,7 +734,7 @@ export class Bridge {
         wakePatterns.some((pattern) => agentMatchesPattern(wake.recipient, pattern)),
       );
     }
-    return { daemon: "agent-bridge", startedAt: this.startedAt, lead, agents, lastWakes };
+    return { daemon: "inband", startedAt: this.startedAt, lead, agents, lastWakes };
   }
 
   clear(confirm: string) {

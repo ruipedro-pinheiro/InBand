@@ -2,7 +2,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { signAgentBridgeRequest } from "./auth.ts";
+import { signInbandRequest } from "./auth.ts";
 import { buildSubscribeUrl, channelInstructions, createMailboxResolver, readChannelConfig } from "./channel-config.ts";
 import { clientTokenFromEnv, loadTokenEnvFile } from "./token-env.ts";
 
@@ -12,7 +12,7 @@ const config = readChannelConfig();
 const resolveMailbox = createMailboxResolver(config);
 
 const mcp = new Server(
-  { name: "agent-bridge-channel", version: "1.0.0" },
+  { name: "inband-channel", version: "1.0.0" },
   {
     capabilities: { experimental: { "claude/channel": {} } },
     instructions: channelInstructions(config.mailbox),
@@ -53,12 +53,12 @@ while (true) {
   try {
     const url = buildSubscribeUrl({ bridgeUrl: config.bridgeUrl, mailbox }, POLL_SECONDS, afterId);
     const headers: Record<string, string> = {};
-    const clientId = Bun.env.AGENT_BRIDGE_CLIENT_ID ?? "claude";
+    const clientId = Bun.env.INBAND_CLIENT_ID ?? "claude";
     const token = clientTokenFromEnv(clientId);
     if (token) {
       Object.assign(
         headers,
-        signAgentBridgeRequest({
+        signInbandRequest({
           clientId,
           token,
           method: "GET",

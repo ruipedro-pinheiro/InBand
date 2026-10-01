@@ -78,7 +78,7 @@ write_server_tokens() {
   fi
   load_tokens
   added=0
-  for var in AGENT_BRIDGE_ADMIN_TOKEN AGENT_BRIDGE_CLAUDE_TOKEN AGENT_BRIDGE_CODEX_TOKEN AGENT_BRIDGE_OPENCODE_TOKEN; do
+  for var in INBAND_ADMIN_TOKEN INBAND_CLAUDE_TOKEN INBAND_CODEX_TOKEN INBAND_OPENCODE_TOKEN; do
     if ensure_token_var "$var"; then added=$((added + 1)); fi
   done
   if [ "$added" -gt 0 ]; then
@@ -134,11 +134,11 @@ write_config() {
 # A client needs the tokens of the daemon host. New random tokens would not match them.
 check_client_tokens() {
   step "Checking tokens.env"
-  if [ ! -f "$ROOT/tokens.env" ] || ! grep -q '^AGENT_BRIDGE_[A-Z]*_TOKEN=.' "$ROOT/tokens.env"; then
+  if [ ! -f "$ROOT/tokens.env" ] || ! grep -q '^INBAND_[A-Z]*_TOKEN=.' "$ROOT/tokens.env"; then
     cat >&2 <<MSG
 $ROOT/tokens.env is missing or has no token.
 Copy from the tokens.env of the daemon host only the lines of the clients that
-run on this machine (for example AGENT_BRIDGE_CLAUDE_TOKEN). Do not copy the
+run on this machine (for example INBAND_CLAUDE_TOKEN). Do not copy the
 admin token. Then set mode 600 and run this again.
 MSG
     exit 1
@@ -161,8 +161,8 @@ if [ "$DO_HOOKS" = 1 ]; then
     say "no $CLAUDE_DIR and no claude binary, skipping (use --no-hooks to silence this)"
   else
     mkdir -p "$CLAUDE_DIR/hooks"
-    cp "$ROOT"/hooks/agent-bridge-*.sh "$CLAUDE_DIR/hooks/"
-    chmod +x "$CLAUDE_DIR"/hooks/agent-bridge-*.sh
+    cp "$ROOT"/hooks/inband-*.sh "$CLAUDE_DIR/hooks/"
+    chmod +x "$CLAUDE_DIR"/hooks/inband-*.sh
     say "copied hooks to $CLAUDE_DIR/hooks/"
 
     SETTINGS="$CLAUDE_DIR/settings.json"
@@ -174,9 +174,9 @@ if [ "$DO_HOOKS" = 1 ]; then
       const s = JSON.parse(fs.readFileSync(file, "utf8"));
       s.hooks ??= {};
       const want = [
-        ["SessionStart", "agent-bridge-name.sh",       null, undefined],
-        ["SessionEnd",   "agent-bridge-disconnect.sh", null, 5],
-        ["PostToolUse",  "agent-bridge-mailcheck.sh",  "Bash", 5],
+        ["SessionStart", "inband-name.sh",       null, undefined],
+        ["SessionEnd",   "inband-disconnect.sh", null, 5],
+        ["PostToolUse",  "inband-mailcheck.sh",  "Bash", 5],
       ];
       let added = 0;
       for (const [event, script, matcher, timeout] of want) {
@@ -208,8 +208,8 @@ if [ "$DO_HOOKS" = 1 ]; then
       s.hooks ??= {};
       let added = 0;
       for (const [event, statusMessage] of [
-        ["SessionStart", "Registering the agent-bridge mailbox"],
-        ["Stop", "Checking the agent-bridge mailbox"],
+        ["SessionStart", "Registering the inband mailbox"],
+        ["Stop", "Checking the inband mailbox"],
       ]) {
         s.hooks[event] ??= [];
         if (JSON.stringify(s.hooks[event]).includes("codex-hook.ts")) continue;
@@ -250,20 +250,20 @@ if [ "$DO_SERVICE" = 1 ]; then
   else
     mkdir -p "$UNIT_DIR"
     sed -e "s|%h/.bun/bin/bun|$BUN_BIN|g" \
-        -e "s|%h/.local/share/mcp-servers/agent-bridge|$ROOT|g" \
-      "$ROOT/agent-bridge.service.example" > "$UNIT_DIR/agent-bridge.service"
+        -e "s|%h/.local/share/mcp-servers/inband|$ROOT|g" \
+      "$ROOT/inband.service.example" > "$UNIT_DIR/inband.service"
     systemctl --user daemon-reload
-    systemctl --user enable agent-bridge
-    systemctl --user restart agent-bridge
+    systemctl --user enable inband
+    systemctl --user restart inband
     say "service enabled and restarted"
 
     sleep 2
     if curl -sf --max-time 5 \
-      -H "Authorization: Bearer ${AGENT_BRIDGE_ADMIN_TOKEN:-}" \
+      -H "Authorization: Bearer ${INBAND_ADMIN_TOKEN:-}" \
       http://127.0.0.1:7447/health >/dev/null; then
       say "health check passed on http://127.0.0.1:7447"
     else
-      say "health check FAILED, look at: journalctl --user -u agent-bridge -n 30"
+      say "health check FAILED, look at: journalctl --user -u inband -n 30"
     fi
   fi
 fi
@@ -271,26 +271,26 @@ fi
 step "Remaining manual step: connect your agents"
 cat <<'EOF'
   Tokens are in:
-    ~/.local/share/mcp-servers/agent-bridge/tokens.env
+    ~/.local/share/mcp-servers/inband/tokens.env
 
   Claude Code:
-    set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
-    claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
-      --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
-    claude mcp add --scope user agent-bridge-channel -- \
-      "$(command -v bun)" ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
+    set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
+    claude mcp add --scope user --transport http inband http://127.0.0.1:7447/mcp \
+      --header "Authorization: Bearer $INBAND_CLAUDE_TOKEN"
+    claude mcp add --scope user inband-channel -- \
+      "$(command -v bun)" ~/.local/share/mcp-servers/inband/src/channel-shim.ts
     Start Claude Code with:
-      --dangerously-load-development-channels server:agent-bridge-channel
+      --dangerously-load-development-channels server:inband-channel
 
   Codex:
-    set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
-    codex mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
-      --bearer-token-env-var AGENT_BRIDGE_CODEX_TOKEN
+    set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
+    codex mcp add inband --url http://127.0.0.1:7447/mcp \
+      --bearer-token-env-var INBAND_CODEX_TOKEN
 
   OpenCode:
-    set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
-    opencode mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
-      --header "Authorization=Bearer $AGENT_BRIDGE_OPENCODE_TOKEN"
+    set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
+    opencode mcp add inband --url http://127.0.0.1:7447/mcp \
+      --header "Authorization=Bearer $INBAND_OPENCODE_TOKEN"
 
   Then restart your agents so they pick up the new server.
 EOF

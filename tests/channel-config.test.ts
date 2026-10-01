@@ -16,8 +16,8 @@ describe("channel config", () => {
 
   test("reads bridge URL and mailbox from env", () => {
     const config = readChannelConfig({
-      AGENT_BRIDGE_URL: "http://127.0.0.1:8744/",
-      AGENT_BRIDGE_MAILBOX: "claude-desktop-a1b2",
+      INBAND_URL: "http://127.0.0.1:8744/",
+      INBAND_MAILBOX: "claude-desktop-a1b2",
     });
 
     expect(config).toEqual({
@@ -29,13 +29,13 @@ describe("channel config", () => {
   test("refuses non-loopback bridge URLs", () => {
     expect(() =>
       readChannelConfig({
-        AGENT_BRIDGE_URL: "http://bridge.example.test:7447/",
+        INBAND_URL: "http://bridge.example.test:7447/",
       }),
     ).toThrow(/non-loopback/i);
   });
 
   test("strips trailing slashes from the bridge URL", () => {
-    expect(readChannelConfig({ AGENT_BRIDGE_URL: "http://127.0.0.1:7447///", AGENT_BRIDGE_MAILBOX: "claude-test" }).bridgeUrl).toBe(
+    expect(readChannelConfig({ INBAND_URL: "http://127.0.0.1:7447///", INBAND_MAILBOX: "claude-test" }).bridgeUrl).toBe(
       "http://127.0.0.1:7447",
     );
   });
@@ -50,9 +50,9 @@ describe("channel config", () => {
   });
 
   test("normalizes explicit identities and rejects generic or invalid mailboxes", () => {
-    expect(readChannelConfig({ AGENT_BRIDGE_MAILBOX: " CLAUDE-Desktop-A1B2 " }).mailbox).toBe("claude-desktop-a1b2");
+    expect(readChannelConfig({ INBAND_MAILBOX: " CLAUDE-Desktop-A1B2 " }).mailbox).toBe("claude-desktop-a1b2");
     for (const mailbox of ["claude", "all", "claude/test", "x".repeat(65)]) {
-      expect(() => readChannelConfig({ AGENT_BRIDGE_MAILBOX: mailbox })).toThrow(/mailbox/i);
+      expect(() => readChannelConfig({ INBAND_MAILBOX: mailbox })).toThrow(/mailbox/i);
     }
   });
 
@@ -64,14 +64,14 @@ describe("channel config", () => {
   test("instructions name the owned mailbox and get_messages target", () => {
     const instructions = channelInstructions("claude-desktop-a1b2");
 
-    expect(instructions).toContain("YOUR agent-bridge mailbox is claude-desktop-a1b2");
+    expect(instructions).toContain("YOUR inband mailbox is claude-desktop-a1b2");
     expect(instructions).toContain('get_messages tool with for="claude-desktop-a1b2"');
   });
 
   test("native subscriptions use the current hook identity after a session change", () => {
     const instructions = channelInstructions();
 
-    expect(instructions).not.toContain("YOUR agent-bridge mailbox is claude.");
+    expect(instructions).not.toContain("YOUR inband mailbox is claude.");
     expect(instructions).not.toContain('for="claude"');
     expect(instructions).toContain("SessionStart");
   });

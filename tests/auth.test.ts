@@ -5,7 +5,7 @@ import {
   authenticateSignedRequest,
   buildAuthRuntime,
   directoryAgentPatterns,
-  signAgentBridgeRequest,
+  signInbandRequest,
   visibleAgentPatterns,
 } from "../src/auth.ts";
 
@@ -24,7 +24,7 @@ function runtime() {
   });
 }
 
-describe("agent-bridge auth", () => {
+describe("inband auth", () => {
   test("requires a known bearer token and binds it to agent-name scopes", () => {
     const auth = runtime();
     const claude = authenticateAuthorizationHeader(auth, `Bearer ${CLAUDE_TOKEN}`);
@@ -53,7 +53,7 @@ describe("agent-bridge auth", () => {
       url: "http://127.0.0.1:7447/presence",
       body: { agent: "claude-api-a1b2", online: true },
     };
-    const headers = signAgentBridgeRequest({
+    const headers = signInbandRequest({
       clientId: "claude",
       token: CLAUDE_TOKEN,
       ...request,

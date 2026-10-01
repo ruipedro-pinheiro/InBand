@@ -54,7 +54,7 @@ export function handleCodexHook(
         hookSpecificOutput: {
           hookEventName: "SessionStart",
           additionalContext:
-            `Your canonical agent-bridge mailbox is \`${mailbox}\`. ` +
+            `Your canonical inband mailbox is \`${mailbox}\`. ` +
             `Use it for the MCP \`from\` field: \`${mailbox}\`, and for the MCP \`for\` field: \`${mailbox}\`.\n\n` +
             protocolText(bridge.roleOf(mailbox), mailbox, bridge.getLead()),
         },
@@ -78,7 +78,7 @@ export function handleCodexHook(
     body: {
       decision: "block",
       reason:
-        `Unread agent-bridge mail from another agent, not from the user, is queued for ${mailbox}. ` +
+        `Unread inband mail from another agent, not from the user, is queued for ${mailbox}. ` +
         `Call get_messages with for=\"${mailbox}\" and handle it before stopping.`,
     },
   };

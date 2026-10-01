@@ -134,8 +134,8 @@ async function runScript(payload: unknown, url: string, timeoutMs = 2000) {
     cwd: ROOT,
     env: {
       ...process.env,
-      AGENT_BRIDGE_CODEX_HOOK_URL: url,
-      AGENT_BRIDGE_CODEX_HOOK_TIMEOUT_MS: String(timeoutMs),
+      INBAND_CODEX_HOOK_URL: url,
+      INBAND_CODEX_HOOK_TIMEOUT_MS: String(timeoutMs),
     },
     stdin: "pipe",
     stdout: "pipe",

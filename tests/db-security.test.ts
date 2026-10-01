@@ -6,7 +6,7 @@ import { openDb } from "../src/db.ts";
 
 describe("database file security", () => {
   test("creates SQLite files readable only by the current OS user", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agent-bridge-db-"));
+    const dir = mkdtempSync(join(tmpdir(), "inband-db-"));
     try {
       const path = join(dir, "bridge.db");
       const db = openDb(path);

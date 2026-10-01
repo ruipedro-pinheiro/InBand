@@ -31,11 +31,11 @@ export function isLoopbackBindHost(host: string): boolean {
 }
 
 export function resolveBindHost(env: Record<string, string | undefined> = Bun.env): string {
-  const host = env.AGENT_BRIDGE_BIND?.trim() || "127.0.0.1";
+  const host = env.INBAND_BIND?.trim() || "127.0.0.1";
   if (isLoopbackBindHost(host)) return host;
-  if (unsafeEnabled(env, "AGENT_BRIDGE_UNSAFE_REMOTE_BIND")) return host;
+  if (unsafeEnabled(env, "INBAND_UNSAFE_REMOTE_BIND")) return host;
   throw new Error(
-    `refusing non-loopback bind host "${host}"; set AGENT_BRIDGE_UNSAFE_REMOTE_BIND=1 only behind real auth and firewalling`,
+    `refusing non-loopback bind host "${host}"; set INBAND_UNSAFE_REMOTE_BIND=1 only behind real auth and firewalling`,
   );
 }
 
@@ -59,9 +59,9 @@ export function normalizeLoopbackHttpBaseUrl(
   if (url.protocol !== "http:") {
     throw new Error(`expected http URL for local agent endpoint "${raw}"`);
   }
-  if (!isLoopbackUrlHost(url.hostname) && !unsafeEnabled(env, "AGENT_BRIDGE_UNSAFE_REMOTE_URLS")) {
+  if (!isLoopbackUrlHost(url.hostname) && !unsafeEnabled(env, "INBAND_UNSAFE_REMOTE_URLS")) {
     throw new Error(
-      `refusing non-loopback agent endpoint "${raw}"; set AGENT_BRIDGE_UNSAFE_REMOTE_URLS=1 only for a trusted private endpoint`,
+      `refusing non-loopback agent endpoint "${raw}"; set INBAND_UNSAFE_REMOTE_URLS=1 only for a trusted private endpoint`,
     );
   }
   url.pathname = url.pathname.replace(/\/+$/, "");

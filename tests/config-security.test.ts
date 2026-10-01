@@ -9,18 +9,18 @@ import {
 describe("security config validation", () => {
   test("refuses non-loopback bind hosts unless explicitly allowed", () => {
     expect(resolveBindHost({})).toBe("127.0.0.1");
-    expect(resolveBindHost({ AGENT_BRIDGE_BIND: "localhost" })).toBe("localhost");
-    expect(resolveBindHost({ AGENT_BRIDGE_BIND: "::1" })).toBe("::1");
+    expect(resolveBindHost({ INBAND_BIND: "localhost" })).toBe("localhost");
+    expect(resolveBindHost({ INBAND_BIND: "::1" })).toBe("::1");
     expect(isLoopbackBindHost("127.0.0.1")).toBe(true);
     expect(isLoopbackBindHost("0.0.0.0")).toBe(false);
 
-    expect(() => resolveBindHost({ AGENT_BRIDGE_BIND: "0.0.0.0" })).toThrow(/non-loopback/i);
-    expect(() => resolveBindHost({ AGENT_BRIDGE_BIND: "192.168.1.10" })).toThrow(/non-loopback/i);
+    expect(() => resolveBindHost({ INBAND_BIND: "0.0.0.0" })).toThrow(/non-loopback/i);
+    expect(() => resolveBindHost({ INBAND_BIND: "192.168.1.10" })).toThrow(/non-loopback/i);
 
     expect(
       resolveBindHost({
-        AGENT_BRIDGE_BIND: "0.0.0.0",
-        AGENT_BRIDGE_UNSAFE_REMOTE_BIND: "1",
+        INBAND_BIND: "0.0.0.0",
+        INBAND_UNSAFE_REMOTE_BIND: "1",
       }),
     ).toBe("0.0.0.0");
   });

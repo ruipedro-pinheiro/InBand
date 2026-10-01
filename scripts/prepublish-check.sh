@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "prepublish-check: run from inside the agent-bridge git repository" >&2
+  echo "prepublish-check: run from inside the inband git repository" >&2
   exit 2
 fi
 

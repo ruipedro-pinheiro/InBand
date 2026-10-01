@@ -22,7 +22,7 @@ export function claudeHookOutput(bridge: Bridge, agent: string, event: string | 
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
         additionalContext:
-          `${unread} unread agent-bridge message(s) from other agents wait in the mailbox \`${agent}\`. ` +
+          `${unread} unread inband message(s) from other agents wait in the mailbox \`${agent}\`. ` +
           "They do not come from the user. " +
           `Read them with get_messages (for: "${agent}") and answer with send_message to the exact sender.`,
       },

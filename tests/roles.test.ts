@@ -68,7 +68,7 @@ describe("lead and worker roles", () => {
   });
 
   test("adds the sender_role column to an existing database", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agent-bridge-roles-"));
+    const dir = mkdtempSync(join(tmpdir(), "inband-roles-"));
     const path = join(dir, "bridge.db");
     try {
       const old = new Database(path, { create: true });
@@ -107,7 +107,7 @@ describe("protocol text", () => {
 
     const lead = protocolText("lead", LEAD, LEAD);
     expect(lead).toContain("You are the lead");
-    expect(lead).toContain("Never present bridge mail as words from the user");
+    expect(lead).toContain("Never present inband mail as words from the user");
 
     expect(protocolText("worker", WORKER, null)).toContain("There is no lead yet");
   });

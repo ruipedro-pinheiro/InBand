@@ -1,6 +1,6 @@
 param(
   [string]$SourceDir = (Get-Location).Path,
-  [string]$ChannelDir = (Join-Path $env:LOCALAPPDATA "agent-bridge-channel"),
+  [string]$ChannelDir = (Join-Path $env:LOCALAPPDATA "inband-channel"),
   [string]$BridgeUrl = "http://127.0.0.1:7447",
   [Parameter(Mandatory = $true)]
   [string]$Mailbox
@@ -45,19 +45,19 @@ try {
 $shimPath = (Join-Path $ChannelDir "src/channel-shim.ts") -replace '\\', '/'
 $entry = [ordered]@{
   mcpServers = [ordered]@{
-    "agent-bridge-channel" = [ordered]@{
+    "inband-channel" = [ordered]@{
       command = "bun"
       args = @("run", $shimPath)
       env = [ordered]@{
-        AGENT_BRIDGE_URL = $BridgeUrl
-        AGENT_BRIDGE_MAILBOX = $Mailbox
-        AGENT_BRIDGE_CLIENT_ID = "claude"
+        INBAND_URL = $BridgeUrl
+        INBAND_MAILBOX = $Mailbox
+        INBAND_CLIENT_ID = "claude"
       }
     }
   }
 }
 
-Write-Host "Installed agent-bridge channel files in: $ChannelDir"
+Write-Host "Installed inband channel files in: $ChannelDir"
 Write-Host "Add this .claude.json MCP entry manually; this script does not edit ~/.claude.json."
-Write-Host "If auth is enabled, set AGENT_BRIDGE_CLAUDE_TOKEN or AGENT_BRIDGE_TOKEN in your user environment. This script never prints token values."
+Write-Host "If auth is enabled, set INBAND_CLAUDE_TOKEN or INBAND_TOKEN in your user environment. This script never prints token values."
 $entry | ConvertTo-Json -Depth 8

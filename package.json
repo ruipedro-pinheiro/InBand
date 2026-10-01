@@ -1,5 +1,5 @@
 {
-  "name": "agent-bridge",
+  "name": "inband",
   "version": "1.0.0",
   "description": "MCP daemon for async messaging between coding agents (Claude Code, Codex, OpenCode)",
   "license": "MIT",
@@ -17,9 +17,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ruipedro-pinheiro/agent-bridge.git"
+    "url": "git+https://github.com/ruipedro-pinheiro/InBand.git"
   },
-  "homepage": "https://github.com/ruipedro-pinheiro/agent-bridge#readme",
+  "homepage": "https://github.com/ruipedro-pinheiro/InBand#readme",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",

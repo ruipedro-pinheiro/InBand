@@ -6,22 +6,22 @@ import { clientTokenFromEnv, loadTokenEnvFile } from "../src/token-env.ts";
 
 describe("token env loading", () => {
   test("loads scoped client tokens from a private env file without overwriting existing env", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agent-bridge-tokens-"));
+    const dir = mkdtempSync(join(tmpdir(), "inband-tokens-"));
     try {
       const file = join(dir, "tokens.env");
       writeFileSync(
         file,
         [
-          "AGENT_BRIDGE_CLAUDE_TOKEN=from-file",
-          "AGENT_BRIDGE_CODEX_TOKEN='quoted-file-token'",
+          "INBAND_CLAUDE_TOKEN=from-file",
+          "INBAND_CODEX_TOKEN='quoted-file-token'",
           "IGNORED lowercase=value",
           "",
         ].join("\n"),
         { mode: 0o600 },
       );
       const env: Record<string, string | undefined> = {
-        AGENT_BRIDGE_TOKENS_FILE: file,
-        AGENT_BRIDGE_CLAUDE_TOKEN: "already-set",
+        INBAND_TOKENS_FILE: file,
+        INBAND_CLAUDE_TOKEN: "already-set",
       };
 
       expect(loadTokenEnvFile(env)).toBe(true);
@@ -32,8 +32,8 @@ describe("token env loading", () => {
     }
   });
 
-  test("prefers the client token and uses AGENT_BRIDGE_TOKEN only as a fallback", () => {
-    const env = { AGENT_BRIDGE_TOKEN: "generic", AGENT_BRIDGE_CLAUDE_TOKEN: "claude" };
+  test("prefers the client token and uses INBAND_TOKEN only as a fallback", () => {
+    const env = { INBAND_TOKEN: "generic", INBAND_CLAUDE_TOKEN: "claude" };
     expect(clientTokenFromEnv("claude", env)).toBe("claude");
     expect(clientTokenFromEnv("codex", env)).toBe("generic");
   });

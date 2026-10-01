@@ -17,7 +17,7 @@ export interface AuthConfig {
 
 export type AuthMode = "bearer" | "hmac" | "disabled";
 
-export interface AgentBridgeAuthInfo extends AuthInfo {
+export interface InbandAuthInfo extends AuthInfo {
   extra: {
     agents: string[];
     directory?: string[];
@@ -54,10 +54,10 @@ export interface SignRequestInput extends RequestToSign {
   nonce?: string;
 }
 
-export const AUTH_CLIENT_HEADER = "x-agent-bridge-client";
-export const AUTH_TIMESTAMP_HEADER = "x-agent-bridge-timestamp";
-export const AUTH_NONCE_HEADER = "x-agent-bridge-nonce";
-export const AUTH_SIGNATURE_HEADER = "x-agent-bridge-signature";
+export const AUTH_CLIENT_HEADER = "x-inband-client";
+export const AUTH_TIMESTAMP_HEADER = "x-inband-timestamp";
+export const AUTH_NONCE_HEADER = "x-inband-nonce";
+export const AUTH_SIGNATURE_HEADER = "x-inband-signature";
 
 const TOKEN_MIN_LENGTH = 32;
 const NONCE_RE = /^[a-zA-Z0-9._:-]{6,128}$/;
@@ -153,7 +153,7 @@ export function buildAuthRuntime(
   return { required: Boolean(config.required), clients, nonceWindowMs: 300_000, seenNonces: new Map() };
 }
 
-function authInfo(client: ResolvedClient, mode: AuthMode): AgentBridgeAuthInfo {
+function authInfo(client: ResolvedClient, mode: AuthMode): InbandAuthInfo {
   return {
     token: "[redacted]",
     clientId: client.clientId,
@@ -167,7 +167,7 @@ function authInfo(client: ResolvedClient, mode: AuthMode): AgentBridgeAuthInfo {
   };
 }
 
-export function disabledAuthInfo(): AgentBridgeAuthInfo {
+export function disabledAuthInfo(): InbandAuthInfo {
   return {
     token: "[auth-disabled]",
     clientId: "auth-disabled",
@@ -176,7 +176,7 @@ export function disabledAuthInfo(): AgentBridgeAuthInfo {
   };
 }
 
-export function authenticateAuthorizationHeader(runtime: AuthRuntime, authorization: string | undefined): AgentBridgeAuthInfo {
+export function authenticateAuthorizationHeader(runtime: AuthRuntime, authorization: string | undefined): InbandAuthInfo {
   if (!runtime.required && !authorization) return disabledAuthInfo();
   if (!authorization) throw new Error("missing Authorization header");
 
@@ -200,7 +200,7 @@ function purgeOldNonces(runtime: AuthRuntime, nowMs: number): void {
   }
 }
 
-export function signAgentBridgeRequest(input: SignRequestInput): Record<string, string> {
+export function signInbandRequest(input: SignRequestInput): Record<string, string> {
   const timestamp = String(input.nowMs ?? Date.now());
   const nonce = input.nonce ?? randomBytes(16).toString("hex");
   const signature = createHmac("sha256", input.token)
@@ -218,7 +218,7 @@ export function authenticateSignedRequest(
   runtime: AuthRuntime,
   request: RequestToSign & { headers: Record<string, string | undefined> },
   nowMs = Date.now(),
-): AgentBridgeAuthInfo {
+): InbandAuthInfo {
   if (!runtime.required) return disabledAuthInfo();
 
   const clientId = getHeader(request.headers, AUTH_CLIENT_HEADER);
@@ -226,22 +226,22 @@ export function authenticateSignedRequest(
   const nonce = getHeader(request.headers, AUTH_NONCE_HEADER);
   const signature = getHeader(request.headers, AUTH_SIGNATURE_HEADER);
   if (!clientId || !timestamp || !nonce || !signature) {
-    throw new Error("missing agent-bridge signed auth headers");
+    throw new Error("missing inband signed auth headers");
   }
 
   const client = runtime.clients.get(clientId);
-  if (!client) throw new Error("unknown agent-bridge auth client");
+  if (!client) throw new Error("unknown inband auth client");
   const timestampMs = Number(timestamp);
   if (!Number.isFinite(timestampMs) || Math.abs(nowMs - timestampMs) > runtime.nonceWindowMs) {
-    throw new Error("stale agent-bridge signed request");
+    throw new Error("stale inband signed request");
   }
-  if (!NONCE_RE.test(nonce)) throw new Error("invalid agent-bridge auth nonce");
+  if (!NONCE_RE.test(nonce)) throw new Error("invalid inband auth nonce");
 
   purgeOldNonces(runtime, nowMs);
   const nonceKey = `${clientId}:${nonce}`;
-  if (runtime.seenNonces.has(nonceKey)) throw new Error("agent-bridge signed request replay detected");
+  if (runtime.seenNonces.has(nonceKey)) throw new Error("inband signed request replay detected");
 
-  const expected = signAgentBridgeRequest({
+  const expected = signInbandRequest({
     clientId,
     token: client.token,
     method: request.method,
@@ -250,7 +250,7 @@ export function authenticateSignedRequest(
     nowMs: timestampMs,
     nonce,
   })[AUTH_SIGNATURE_HEADER];
-  if (!constantEqual(signature, expected)) throw new Error("invalid agent-bridge request signature");
+  if (!constantEqual(signature, expected)) throw new Error("invalid inband request signature");
 
   runtime.seenNonces.set(nonceKey, nowMs);
   return authInfo(client, "hmac");
@@ -259,7 +259,7 @@ export function authenticateSignedRequest(
 export function authenticateRequest(
   runtime: AuthRuntime,
   request: RequestToSign & { headers: Record<string, string | undefined> },
-): AgentBridgeAuthInfo {
+): InbandAuthInfo {
   const authorization = getHeader(request.headers, "authorization");
   if (authorization) return authenticateAuthorizationHeader(runtime, authorization);
   return authenticateSignedRequest(runtime, request);
@@ -273,29 +273,29 @@ export function agentMatchesPattern(agentRaw: string, patternRaw: string): boole
   return agent === pattern;
 }
 
-export function assertAgentAuthorized(auth: AgentBridgeAuthInfo, agent: string, field: string): void {
+export function assertAgentAuthorized(auth: InbandAuthInfo, agent: string, field: string): void {
   if (auth.extra.admin) return;
   if (auth.extra.agents.some((pattern) => agentMatchesPattern(agent, pattern))) return;
   throw new Error(`auth client "${auth.clientId}" is not authorized to use ${field}="${agent}"`);
 }
 
-export function assertFamilyAuthorized(auth: AgentBridgeAuthInfo, prefix: string, field: string): void {
+export function assertFamilyAuthorized(auth: InbandAuthInfo, prefix: string, field: string): void {
   if (auth.extra.admin) return;
   const familyPattern = `${prefix.trim().toLowerCase()}-*`;
   if (auth.extra.agents.some((pattern) => pattern === "*" || pattern === familyPattern)) return;
   throw new Error(`auth client "${auth.clientId}" is not authorized to use ${field}="${prefix}"`);
 }
 
-export function assertAdmin(auth: AgentBridgeAuthInfo): void {
+export function assertAdmin(auth: InbandAuthInfo): void {
   if (!auth.extra.admin) throw new Error(`auth client "${auth.clientId}" is not authorized for admin operations`);
 }
 
-export function visibleAgentPatterns(auth: AgentBridgeAuthInfo): string[] | undefined {
+export function visibleAgentPatterns(auth: InbandAuthInfo): string[] | undefined {
   return auth.extra.admin ? undefined : auth.extra.agents;
 }
 
 // Presence listing only. History and mailbox access keep using visibleAgentPatterns.
-export function directoryAgentPatterns(auth: AgentBridgeAuthInfo): string[] | undefined {
+export function directoryAgentPatterns(auth: InbandAuthInfo): string[] | undefined {
   if (auth.extra.admin) return undefined;
   const directory = auth.extra.directory ?? auth.extra.agents;
   return directory.includes("*") ? undefined : directory;

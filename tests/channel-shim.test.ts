@@ -8,7 +8,7 @@ import { testDb } from "./helpers.ts";
 function startShim(env: Record<string, string>) {
   const child = Bun.spawn([process.execPath, new URL("../src/channel-shim.ts", import.meta.url).pathname], {
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, AGENT_BRIDGE_MAILBOX: "", AGENT_BRIDGE_TOKENS_FILE: "/nonexistent/channel-test-tokens", ...env },
+    env: { ...process.env, INBAND_MAILBOX: "", INBAND_TOKENS_FILE: "/nonexistent/channel-test-tokens", ...env },
   });
   const reader = child.stdout.getReader();
   let pending = "";
@@ -66,7 +66,7 @@ test("native channel isolates startup mail and follows a retained CLI across cle
     return Response.json({ messages });
   } });
   const env = { CLAUDE_CODE_SESSION_ID: sessionA, CLAUDE_PROJECT_DIR: "/different-project-root", CLAUDE_CONFIG_DIR: dir,
-    AGENT_BRIDGE_URL: `http://127.0.0.1:${server.port}` };
+    INBAND_URL: `http://127.0.0.1:${server.port}` };
   let shim = startShim(env);
   try {
     await shim.initialize();
@@ -102,7 +102,7 @@ test("channel drops rows for a different mailbox even if the server returns them
       { id: 3, sender: "opencode", recipient: "claude-owned", content: "yours", created_at: "now" },
     ] });
   } });
-  const shim = startShim({ AGENT_BRIDGE_MAILBOX: "claude-owned", AGENT_BRIDGE_URL: `http://127.0.0.1:${server.port}` });
+  const shim = startShim({ INBAND_MAILBOX: "claude-owned", INBAND_URL: `http://127.0.0.1:${server.port}` });
   try {
     await shim.initialize();
     expect((await shim.readMessage()).params.content).toBe("yours");
@@ -127,7 +127,7 @@ test("a temporarily unavailable session record does not skip unread notification
     }
     return Response.json({ messages: [{ id: 1, sender: "opencode", recipient: "claude-shared-c3d4", content: "still unread", created_at: "now" }] });
   } });
-  const shim = startShim({ CLAUDE_CODE_SESSION_ID: sessionId, CLAUDE_CONFIG_DIR: dir, AGENT_BRIDGE_URL: `http://127.0.0.1:${server.port}` });
+  const shim = startShim({ CLAUDE_CODE_SESSION_ID: sessionId, CLAUDE_CONFIG_DIR: dir, INBAND_URL: `http://127.0.0.1:${server.port}` });
   try {
     await shim.initialize();
     expect((await shim.readMessage()).params.content).toBe("still unread");
@@ -160,9 +160,9 @@ test("queued channel notifications wait for MCP initialization", async () => {
     stderr: "pipe",
     env: {
       ...process.env,
-      AGENT_BRIDGE_URL: `http://127.0.0.1:${server.port}`,
-      AGENT_BRIDGE_MAILBOX: "claude-test-a1b2",
-      AGENT_BRIDGE_TOKENS_FILE: "/nonexistent/channel-test-tokens",
+      INBAND_URL: `http://127.0.0.1:${server.port}`,
+      INBAND_MAILBOX: "claude-test-a1b2",
+      INBAND_TOKENS_FILE: "/nonexistent/channel-test-tokens",
     },
   });
   const reader = child.stdout.getReader();

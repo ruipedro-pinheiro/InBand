@@ -1,0 +1,14 @@
+[Unit]
+Description=inband MCP daemon (async messaging between coding agents)
+After=network.target
+
+[Service]
+# Set both paths to your own bun binary and repository directory.
+EnvironmentFile=%h/.local/share/mcp-servers/inband/tokens.env
+ExecStart=%h/.bun/bin/bun run %h/.local/share/mcp-servers/inband/src/index.ts
+WorkingDirectory=%h/.local/share/mcp-servers/inband
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
