@@ -1,18 +1,15 @@
 # agent-bridge
 
-agent-bridge is a local MCP daemon that carries messages between Claude Code,
-Codex and OpenCode sessions running on the same machine.
+MCP daemon for message passing between Claude Code, Codex and OpenCode sessions
+of one Unix user. Messages persist in SQLite. Every session has its own mailbox.
+The daemon binds to loopback and requires a token for every request.
 
-Each agent session gets a mailbox. Messages persist in SQLite and are read
-through MCP tools. An idle recipient can be woken so it starts a turn on its
-own. The daemon binds to loopback and requires a bearer token.
+## Requirements
 
-It is built for a single workstation under a single Unix user. It is not a
-remote collaboration service.
+- [Bun](https://bun.sh) 1.3 or later
+- systemd user services, optional
 
-## Installing
-
-Requires [Bun](https://bun.sh) 1.3 or later.
+## Install
 
 ```sh
 git clone https://github.com/ruipedro-pinheiro/agent-bridge ~/.local/share/mcp-servers/agent-bridge
@@ -20,18 +17,27 @@ cd ~/.local/share/mcp-servers/agent-bridge
 ./install.sh
 ```
 
-The installer generates `tokens.env`, writes `config.json`, installs the Claude
-Code hooks and starts the systemd user service. Use `--no-hooks` or
-`--no-service` to skip either step, and `bun run src/index.ts` to run without a
-supervisor.
+| Option         | Effect                                                                 |
+| -------------- | ---------------------------------------------------------------------- |
+| (none)         | Generates `tokens.env` and `config.json`, installs hooks and `/lead`, starts the service |
+| `--no-hooks`   | Skips the Claude Code hooks and the `/lead` commands                   |
+| `--no-service` | Skips the systemd unit. Run the daemon with `bun run src/index.ts`     |
+| `--client`     | Machine without a daemon. See [Client machines](#client-machines)      |
 
-Register the clients, then restart each agent:
+The installer keeps an existing `tokens.env` and only adds missing tokens. It
+keeps an existing `config.json`, except a file without `auth`: it adds `auth`
+and saves the old file as `config.json.pre-auth.bak`. It does not replace a
+different `lead.md`.
+
+## Register the clients
 
 ```sh
-source tokens.env
+source ~/.local/share/mcp-servers/agent-bridge/tokens.env
 
 claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
   --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
+claude mcp add --scope user agent-bridge-channel -- \
+  bun ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
 
 codex mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
   --bearer-token-env-var AGENT_BRIDGE_CODEX_TOKEN
@@ -40,77 +46,147 @@ opencode mcp add agent-bridge --url http://127.0.0.1:7447/mcp \
   --header "Authorization=Bearer $AGENT_BRIDGE_OPENCODE_TOKEN"
 ```
 
-Codex reads its token from the process environment, because its MCP config
-stores the variable name rather than the value.
+Codex reads the token from its process environment. Start Claude Code with
+`--dangerously-load-development-channels server:agent-bridge-channel` to
+receive messages while idle.
+
+## Mailboxes
+
+Mailbox names match `[a-z0-9_-]{1,64}`.
+
+| Client      | Mailbox                          | Set by                 |
+| ----------- | -------------------------------- | ---------------------- |
+| Claude Code | `claude-<dir>-<session prefix>`  | SessionStart hook      |
+| Codex       | `codex-<session uuid>`           | Codex SessionStart hook |
+| OpenCode    | `opencode`                       | Fixed                  |
+
+Recipient aliases: `codex` is the most recent Codex session, `all` is every
+known mailbox except the sender.
 
 ## Tools
 
-`send_message`, `get_messages`, `wait_for_messages`, `get_history`, `ping`, and
-`clear_conversation`. Call `tools/list` for the full schemas.
+| Tool                 | Purpose                                                                 |
+| -------------------- | ----------------------------------------------------------------------- |
+| `send_message`       | Send to a mailbox or an alias                                           |
+| `get_messages`       | Return unread messages and mark them as read                            |
+| `wait_for_messages`  | Block until mail arrives, up to 1800 s. Does not mark mail as read      |
+| `get_history`        | Read past messages visible to the token                                 |
+| `ping`               | List agents, presence, roles, unread counts and recent wakes            |
+| `claim_lead`         | Make the calling session the lead                                       |
+| `clear_conversation` | Delete all messages. Admin token and `confirm="wipe"` required          |
 
-`wait_for_messages` blocks server-side and previews mail without consuming it.
-`get_messages` is the only consumer, so a reply lost to a dropped connection
-never marks mail read.
-
-Mailboxes match `[a-z0-9_-]{1,64}`. Claude Code and Codex sessions register
-their own name through a SessionStart hook. Send to `codex` to reach the most
-recent Codex session, or to `all` to broadcast.
+`get_messages` is the only call that marks mail as read. A reply lost to a
+dropped connection stays unread.
 
 ## Roles
 
-One session is the lead. The user talks to the lead, and the lead talks to the
-other sessions, the workers. The user picks the lead with `/lead`, which calls
-the `claim_lead` tool. The previous lead gets a notice. `ping` shows the lead
-and the role of each agent.
+One session is the lead and the other sessions are workers. The user picks the
+lead with `/lead`, which calls `claim_lead`. The previous lead receives a
+notice.
 
-The daemon holds the protocol text in `src/protocol.ts`. The SessionStart hooks
-of Claude Code and Codex inject it, so every session knows its role, the lead,
-and the routing rules: the user speaks only in normal turns, bridge mail comes
-from agents, and a worker answers the lead with `send_message`, not in its
-terminal. Each message stores the role of its sender as `sender_role`. Channel
-events show it as `from_role`.
+The SessionStart hooks of Claude Code and Codex inject the role, the lead name
+and the routing rules from `src/protocol.ts`:
 
-`install.sh` installs `/lead` for Claude Code (`~/.claude/commands`), OpenCode
-(`~/.config/opencode/commands`) and Codex (`~/.codex/prompts`, run it as
-`/prompts:lead`). It does not replace a different `lead.md` that already exists.
+- The user writes only in normal turns. Bridge mail comes from agents.
+- A worker sends its results to the lead with `send_message`.
+- The lead talks to the user in the terminal and to the workers through the bridge.
 
-## Waking idle agents
+Each message stores `sender_role`. Channel events show it as `from_role`.
 
-Codex receives wake prompts through `codex queue --thread`, OpenCode through
-`POST /session/{id}/prompt_async`. Set `wake.codex.command` to the Codex binary
-you actually run, and launch OpenCode with `opencode --port 14096` so the daemon
-can find its server. The Codex CLI must support the `queue` command. An open,
-idle Codex CLI processes the queued prompt automatically. If the CLI is closed,
-the prompt waits until that thread is resumed; the daemon does not launch a new CLI.
+| Client      | `/lead` file                              | Command          |
+| ----------- | ----------------------------------------- | ---------------- |
+| Claude Code | `~/.claude/commands/lead.md`              | `/lead`          |
+| Codex       | `~/.codex/prompts/lead.md`                | `/prompts:lead`  |
+| OpenCode    | `~/.config/opencode/commands/lead.md`     | `/lead`          |
 
-Claude Code receives channel notifications through `agent-bridge-channel`.
-Start it with `--dangerously-load-development-channels server:agent-bridge-channel`.
-The shim subscribes to one exact mailbox. On the installed Claude Code CLI,
-it reads the current session from that parent process's local session registry,
-including after `/clear`. It uses the same mailbox names as the SessionStart hook.
-If the owning session cannot be verified, delivery pauses. There is no Claude
-family subscription fallback. Other clients must set `AGENT_BRIDGE_MAILBOX` to
-one concrete mailbox. Unread messages for that mailbox replay after startup or
-reconnection without being marked as read. Messages already inserted into a
-Claude conversation cannot be removed by the shim.
+## Idle sessions
 
-Wakes are debounced 30 seconds and capped at 20 per hour. A failed wake is
-logged and never fatal: the message stays queued.
+| Client      | Delivery                                                                 |
+| ----------- | ------------------------------------------------------------------------ |
+| Claude Code | `agent-bridge-channel` pushes each message into the session              |
+| Codex       | `codex queue --thread <id>`. The CLI must support `queue`                |
+| OpenCode    | `POST /session/<id>/prompt_async` to the most recent root session        |
+
+The channel follows the current Claude Code session, also after `/clear`. If it
+cannot verify the session, it pauses delivery. Unread mail replays after a
+reconnection. Codex and OpenCode wakes use the debounce and the hourly cap in
+`config.json`. A failed wake leaves the message queued.
+
+OpenCode must run with `opencode --port 14096`, or the port set in
+`wake.opencode.baseUrl`.
+
+## Client machines
+
+A client machine runs agents and connects to the daemon of another machine.
+
+1. Copy to its `tokens.env` the token lines of the clients that run there. Do
+   not copy the admin token.
+2. Run `./install.sh --client`. It generates no token, writes no `config.json`
+   and installs no service.
+3. Forward the daemon port from the daemon host:
+
+```sh
+ssh -N -R 127.0.0.1:7447:127.0.0.1:7447 <client-machine>
+```
+
+With the default sshd setting `GatewayPorts no`, the forwarded port listens
+only on the loopback of the client.
+
+## Configuration
+
+`config.json` is created from `config.example.json`.
+
+| Key                               | Description                                                      |
+| --------------------------------- | ---------------------------------------------------------------- |
+| `port`                            | Listen port, 1 to 65535. Example: 7447                            |
+| `maxMessageBytes`                 | Maximum message size in bytes, 1 to 1048576. Example: 65536      |
+| `auth.required`                   | `false` disables auth. Any other value keeps it on                |
+| `auth.clients.<id>.tokenEnv`      | Variable in `tokens.env` that holds the token                     |
+| `auth.clients.<id>.agents`        | Mailbox patterns the token can use, for example `claude-*`        |
+| `auth.clients.<id>.directory`     | Mailbox patterns listed by `ping` and `/health`. Default: `agents` |
+| `auth.clients.<id>.admin`         | Access to every mailbox and to `clear_conversation`               |
+| `wake.codex.command`              | Codex executable. A path or a name, not a shell command           |
+| `wake.opencode.baseUrl`           | OpenCode server URL. Loopback only                               |
+| `wake.<client>.prompt`            | Text sent with each wake                                          |
+| `wake.<client>.debounceSeconds`   | Minimum delay after a successful wake of one mailbox              |
+| `wake.<client>.maxWakesPerHour`   | Hourly cap per mailbox                                            |
+| `wake.codex.retryDelaysSeconds`   | Retry delays when a Codex wake does not start, at most 16         |
+
+`directory` gives no access to mail or history. Use `["*"]` to let a client
+see every agent.
+
+| Variable                          | Description                                                     |
+| --------------------------------- | --------------------------------------------------------------- |
+| `AGENT_BRIDGE_BIND`               | Bind address. Default `127.0.0.1`                               |
+| `AGENT_BRIDGE_UNSAFE_REMOTE_BIND` | Set to `1` to allow a non-loopback bind                         |
+| `AGENT_BRIDGE_UNSAFE_REMOTE_URLS` | Set to `1` to allow a non-loopback wake or bridge URL           |
+| `AGENT_BRIDGE_TOKENS_FILE`        | Path of `tokens.env`                                            |
+| `AGENT_BRIDGE_URL`                | Daemon URL for the channel shim                                 |
+| `AGENT_BRIDGE_MAILBOX`            | Fixed mailbox for the channel shim outside Claude Code          |
+| `AGENT_BRIDGE_CLIENT_ID`          | Token client used by the shim and the Codex hook                |
+
+## HTTP endpoints
+
+| Endpoint            | Use                                              |
+| ------------------- | ------------------------------------------------ |
+| `POST /mcp`         | MCP Streamable HTTP                              |
+| `GET /health`       | Status, same content as `ping`                   |
+| `GET /subscribe`    | Long poll used by the channel shim, up to 300 s  |
+| `POST /presence`    | Online and offline state from the hooks          |
+| `GET /claude/hook`  | Output for the Claude Code hooks                 |
+| `POST /codex/hook`  | Codex SessionStart and Stop hooks                |
 
 ## Security
 
-The daemon binds `127.0.0.1` and rejects unauthenticated calls. Tokens live in
-`tokens.env` with mode 0600 and are scoped per agent family, so the Claude token
-cannot act as a Codex mailbox. The admin token is required for full visibility
-and for `clear_conversation`. A client can list more agents in `ping` and
-`/health` through the optional `directory` patterns in its `auth.clients`
-entry, for example `"directory": ["*"]`. This list shows presence only. It
-gives no access to other mailboxes or to their history. Hooks sign their requests with HMAC. A
-non-loopback bind or wake URL requires an explicit unsafe flag.
-
-This is IPC between processes running as the same Unix user. Any process under
-that account can read the token file, the database, or daemon memory. Mailbox
-content is written by other agents and must be treated as untrusted text.
+- Every token is limited to its `agents` patterns. The Claude token cannot use
+  a Codex mailbox.
+- Hooks sign their requests with HMAC-SHA256, with a timestamp and a nonce.
+  The daemon rejects a replayed nonce.
+- `tokens.env`, `config.json` and `bridge.db` have mode 600.
+- Mail content comes from other agents. Clients must handle it as untrusted
+  text.
+- All processes of the Unix user can read the token file and the database.
+  The daemon does not isolate agents of the same user from each other.
 
 ## Operations
 
@@ -120,16 +196,16 @@ journalctl --user -u agent-bridge -f
 
 source tokens.env
 curl -s -H "Authorization: Bearer $AGENT_BRIDGE_ADMIN_TOKEN" http://127.0.0.1:7447/health
+```
 
+## Development
+
+```sh
 bun test
 bun run typecheck
 bun run prepublish:security
 ```
 
-Configuration lives in `config.json`, created from `config.example.json`. Wake
-targets are under `wake`, client tokens under `auth.clients`. Token values stay
-in `tokens.env` and are referenced by name.
-
 ## License
 
-agent-bridge is released under the [MIT license](LICENSE).
+[MIT](LICENSE)

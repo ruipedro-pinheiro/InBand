@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Installs dependencies, config, Claude Code hooks and the systemd user unit.
+# Installs dependencies, config, Claude Code hooks, /lead commands and the systemd user unit.
+# With --client, it prepares a machine that only connects to a daemon on another machine.
 # Safe to run again: it keeps backups before migrating local config.
 set -euo pipefail
 
@@ -8,13 +9,16 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 UNIT_DIR="$HOME/.config/systemd/user"
 DO_HOOKS=1
 DO_SERVICE=1
+CLIENT=0
 
 for arg in "$@"; do
   case "$arg" in
     --no-hooks)   DO_HOOKS=0 ;;
     --no-service) DO_SERVICE=0 ;;
+    --client)     CLIENT=1; DO_SERVICE=0 ;;
     -h|--help)
-      echo "usage: ./install.sh [--no-hooks] [--no-service]"
+      echo "usage: ./install.sh [--no-hooks] [--no-service] [--client]"
+      echo "  --client  this machine runs agents only; the daemon runs on another machine"
       exit 0 ;;
     *)
       echo "unknown option: $arg" >&2
@@ -53,62 +57,90 @@ step "Installing dependencies"
 (cd "$ROOT" && bun install --silent)
 say "done"
 
-step "Writing tokens.env"
-if [ -f "$ROOT/tokens.env" ]; then
-  chmod 600 "$ROOT/tokens.env"
-  say "tokens.env exists, left untouched"
-else
-  umask 077
-  : > "$ROOT/tokens.env"
-  chmod 600 "$ROOT/tokens.env"
-  say "created local auth tokens at $ROOT/tokens.env"
-fi
-load_tokens
-added=0
-for var in AGENT_BRIDGE_ADMIN_TOKEN AGENT_BRIDGE_CLAUDE_TOKEN AGENT_BRIDGE_CODEX_TOKEN AGENT_BRIDGE_OPENCODE_TOKEN; do
-  if ensure_token_var "$var"; then added=$((added + 1)); fi
-done
-if [ "$added" -gt 0 ]; then
-  say "added $added missing token(s)"
-  load_tokens
-fi
-
-step "Writing config.json"
-if [ -f "$ROOT/config.json" ]; then
-  if bun -e '
-    const fs = require("fs");
-    const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    process.exit(cfg.auth && cfg.auth.required !== false && cfg.auth.clients ? 0 : 1);
-  ' "$ROOT/config.json"; then
-    say "config.json exists with auth enabled, left untouched"
+write_server_tokens() {
+  step "Writing tokens.env"
+  if [ -f "$ROOT/tokens.env" ]; then
+    chmod 600 "$ROOT/tokens.env"
+    say "tokens.env exists, left untouched"
   else
-    BACKUP="$ROOT/config.json.pre-auth.bak"
-    cp "$ROOT/config.json" "$BACKUP"
-    bun -e '
-      const fs = require("fs");
-      const [file, example] = process.argv.slice(1);
-      const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
-      const sample = JSON.parse(fs.readFileSync(example, "utf8"));
-      cfg.auth ??= sample.auth;
-      cfg.auth.required = true;
-      cfg.auth.clients ??= sample.auth.clients;
-      fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
-    ' "$ROOT/config.json" "$ROOT/config.example.json"
-    say "added auth.required=true to config.json, backup kept at $BACKUP"
+    umask 077
+    : > "$ROOT/tokens.env"
+    chmod 600 "$ROOT/tokens.env"
+    say "created local auth tokens at $ROOT/tokens.env"
   fi
+  load_tokens
+  added=0
+  for var in AGENT_BRIDGE_ADMIN_TOKEN AGENT_BRIDGE_CLAUDE_TOKEN AGENT_BRIDGE_CODEX_TOKEN AGENT_BRIDGE_OPENCODE_TOKEN; do
+    if ensure_token_var "$var"; then added=$((added + 1)); fi
+  done
+  if [ "$added" -gt 0 ]; then
+    say "added $added missing token(s)"
+    load_tokens
+  fi
+}
+
+write_config() {
+  step "Writing config.json"
+  if [ -f "$ROOT/config.json" ]; then
+    if bun -e '
+      const fs = require("fs");
+      const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      process.exit(cfg.auth && cfg.auth.required !== false && cfg.auth.clients ? 0 : 1);
+    ' "$ROOT/config.json"; then
+      say "config.json exists with auth enabled, left untouched"
+    else
+      BACKUP="$ROOT/config.json.pre-auth.bak"
+      cp "$ROOT/config.json" "$BACKUP"
+      bun -e '
+        const fs = require("fs");
+        const [file, example] = process.argv.slice(1);
+        const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+        const sample = JSON.parse(fs.readFileSync(example, "utf8"));
+        cfg.auth ??= sample.auth;
+        cfg.auth.required = true;
+        cfg.auth.clients ??= sample.auth.clients;
+        fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+      ' "$ROOT/config.json" "$ROOT/config.example.json"
+      say "added auth.required=true to config.json, backup kept at $BACKUP"
+    fi
+  else
+    CODEX_BIN="$(command -v codex || true)"
+    bun -e '
+      const [src, dst, codexBin] = process.argv.slice(1);
+      const cfg = JSON.parse(require("fs").readFileSync(src, "utf8"));
+      if (codexBin) cfg.wake.codex.command = codexBin;
+      require("fs").writeFileSync(dst, JSON.stringify(cfg, null, 2) + "\n");
+    ' "$ROOT/config.example.json" "$ROOT/config.json" "$CODEX_BIN"
+    say "created from config.example.json"
+    [ -n "$CODEX_BIN" ] && say "codex binary detected: $CODEX_BIN" \
+                        || say "codex not found in PATH, edit wake.codex.command yourself"
+  fi
+  chmod 600 "$ROOT/config.json"
+}
+
+# A client needs the tokens of the daemon host. New random tokens would not match them.
+check_client_tokens() {
+  step "Checking tokens.env"
+  if [ ! -f "$ROOT/tokens.env" ] || ! grep -q '^AGENT_BRIDGE_[A-Z]*_TOKEN=.' "$ROOT/tokens.env"; then
+    cat >&2 <<MSG
+$ROOT/tokens.env is missing or has no token.
+Copy from the tokens.env of the daemon host only the lines of the clients that
+run on this machine (for example AGENT_BRIDGE_CLAUDE_TOKEN). Do not copy the
+admin token. Then set mode 600 and run this again.
+MSG
+    exit 1
+  fi
+  chmod 600 "$ROOT/tokens.env"
+  say "tokens.env found, no token generated"
+  load_tokens
+}
+
+if [ "$CLIENT" = 1 ]; then
+  check_client_tokens
 else
-  CODEX_BIN="$(command -v codex || true)"
-  bun -e '
-    const [src, dst, codexBin] = process.argv.slice(1);
-    const cfg = JSON.parse(require("fs").readFileSync(src, "utf8"));
-    if (codexBin) cfg.wake.codex.command = codexBin;
-    require("fs").writeFileSync(dst, JSON.stringify(cfg, null, 2) + "\n");
-  ' "$ROOT/config.example.json" "$ROOT/config.json" "$CODEX_BIN"
-  say "created from config.example.json"
-  [ -n "$CODEX_BIN" ] && say "codex binary detected: $CODEX_BIN" \
-                      || say "codex not found in PATH, edit wake.codex.command yourself"
+  write_server_tokens
+  write_config
 fi
-chmod 600 "$ROOT/config.json"
 
 if [ "$DO_HOOKS" = 1 ]; then
   step "Installing Claude Code hooks"
@@ -203,6 +235,10 @@ cat <<'EOF'
     source ~/.local/share/mcp-servers/agent-bridge/tokens.env
     claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
       --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
+    claude mcp add --scope user agent-bridge-channel -- \
+      bun ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
+    Start Claude Code with:
+      --dangerously-load-development-channels server:agent-bridge-channel
 
   Codex:
     source ~/.local/share/mcp-servers/agent-bridge/tokens.env
@@ -216,3 +252,12 @@ cat <<'EOF'
 
   Then restart your agents so they pick up the new server.
 EOF
+
+if [ "$CLIENT" = 1 ]; then
+  cat <<'EOF'
+
+  Client mode: the agents on this machine expect the daemon on 127.0.0.1:7447.
+  From the daemon host, forward that port to this machine, for example with:
+    ssh -N -R 127.0.0.1:7447:127.0.0.1:7447 <this-machine>
+EOF
+fi
