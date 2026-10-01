@@ -10,6 +10,8 @@ agent-bridge is a message bus for coding agents. It runs as one local MCP
 daemon. Claude Code, Codex and OpenCode sessions use it to send tasks and
 results to each other.
 
+![Demo: a lead session delegates a test run to a worker session](docs/demo.gif)
+
 ```
 send_message        # send to a mailbox, to "codex" (latest Codex session) or to "all"
 wait_for_messages   # block until mail arrives
@@ -81,7 +83,7 @@ set -a; . ~/.local/share/mcp-servers/agent-bridge/tokens.env; set +a
 claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
   --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
 claude mcp add --scope user agent-bridge-channel -- \
-  bun ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
+  "$(command -v bun)" ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
 
 # start with the channel
 claude --dangerously-load-development-channels server:agent-bridge-channel

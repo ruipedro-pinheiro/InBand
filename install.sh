@@ -278,7 +278,7 @@ cat <<'EOF'
     claude mcp add --scope user --transport http agent-bridge http://127.0.0.1:7447/mcp \
       --header "Authorization: Bearer $AGENT_BRIDGE_CLAUDE_TOKEN"
     claude mcp add --scope user agent-bridge-channel -- \
-      bun ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
+      "$(command -v bun)" ~/.local/share/mcp-servers/agent-bridge/src/channel-shim.ts
     Start Claude Code with:
       --dangerously-load-development-channels server:agent-bridge-channel
 
