@@ -1,0 +1,9 @@
+[package]
+name = "inband"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rmcp = { version = "3.5.0", features = ["server", "transport-io"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "io-std", "time"] }

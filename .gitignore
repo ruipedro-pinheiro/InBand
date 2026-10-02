@@ -21,3 +21,4 @@ backups/
 node_modules/
 dist/
 *.log
+/rust/target/
