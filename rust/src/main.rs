@@ -5,8 +5,8 @@ use std::time::Duration;
 use rmcp::{
     ServerHandler, ServiceExt,
     model::{
-        CustomNotification, ExperimentalCapabilities, JsonObject, ProtocolVersion, ServerCapabilities, ServerConfig,
-        ServerNotification,
+        CustomNotification, ExperimentalCapabilities, JsonObject, ProtocolVersion,
+        ServerCapabilities, ServerConfig, ServerNotification,
     },
     service::{NotificationContext, RoleServer},
     transport::stdio,
@@ -43,7 +43,11 @@ impl ServerHandler for Spike {
                 "meta": { "from": "rust-spike", "from_role": "worker" },
             })),
         );
-        if let Err(error) = context.peer.send_notification(ServerNotification::CustomNotification(event)).await {
+        if let Err(error) = context
+            .peer
+            .send_notification(ServerNotification::CustomNotification(event))
+            .await
+        {
             eprintln!("spike: notification failed: {error}");
         }
     }

@@ -1,9 +1,21 @@
 [package]
 name = "inband"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
+description = "Local MCP message bus for Claude Code, Codex and OpenCode sessions"
+license = "MIT"
+repository = "https://github.com/ruipedro-pinheiro/InBand"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
 
 [dependencies]
 rmcp = { version = "3.5.0", features = ["server", "transport-io"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "io-std", "time"] }
+url = "2.5.8"
