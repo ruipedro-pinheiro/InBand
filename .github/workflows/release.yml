@@ -19,9 +19,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v5
 
@@ -45,7 +42,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: inband-${{ matrix.arch }}
-          path: rust/inband-${{ matrix.arch }}-linux.tar.gz
+          path: inband-${{ matrix.arch }}-linux.tar.gz
           if-no-files-found: error
 
   release:

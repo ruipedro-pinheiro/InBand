@@ -1,9 +1,10 @@
 # Reference
 
+- [Commands](#commands)
 - [Installer](#installer)
 - [Mailboxes](#mailboxes)
+- [Teams](#teams)
 - [Tools](#tools)
-- [Roles](#roles)
 - [Waking idle sessions](#waking-idle-sessions)
 - [Client machines](#client-machines)
 - [Configuration](#configuration)
@@ -12,112 +13,128 @@
 - [Security](#security)
 - [Limits](#limits)
 
+## Commands
+
+| Command                   | Run by                                   |
+| ------------------------- | ---------------------------------------- |
+| `inband daemon [--dir D]` | The systemd user service                 |
+| `inband install`          | `install.sh`, or you, to repair a setup  |
+| `inband hook claude`      | The Claude Code hooks                    |
+| `inband hook codex`       | The Codex hooks                          |
+| `inband shim`             | Claude Code, as its `inband` MCP server  |
+| `inband opencode ...`     | The OpenCode plugin                      |
+
 ## Installer
 
-`install.sh` requires Bun. The Claude Code hooks also use `python3` and `curl`.
+`inband install` options:
 
-| Option         | Effect                                                                  |
-| -------------- | ----------------------------------------------------------------------- |
-| (none)         | Tokens, `config.json`, hooks, `/lead` commands and the systemd service  |
-| `--no-hooks`   | Skips the Claude Code hooks, the Codex hooks and the `/lead` commands   |
-| `--no-service` | Skips the systemd unit                                                  |
-| `--client`     | Machine without a daemon, see [Client machines](#client-machines)       |
+| Option         | Effect                                                            |
+| -------------- | ----------------------------------------------------------------- |
+| (none)         | Tokens, `config.json`, every client found, the systemd service    |
+| `--no-service` | Skips the systemd unit                                            |
+| `--client`     | Machine without a daemon, see [Client machines](#client-machines) |
 
-What the installer keeps:
+A client counts as found when its configuration directory or its binary
+exists. Per client, the installer writes:
 
-- `tokens.env`: it adds the missing tokens and changes nothing else.
-- `config.json`: it keeps the file. A file without `auth` or without
-  `auth.clients` gets the values of `config.example.json`, and the old file is
-  saved as `config.json.pre-auth.bak`. A file with `auth.required: false` stays
-  as is, with a warning.
-- `~/.claude/settings.json` and `~/.codex/hooks.json`: it adds the missing
-  InBand hooks and saves a `.bak` copy first.
-- `lead.md`: it does not replace a file that differs.
+| Client      | Hooks                                                      | Tools                                  | Team commands                          |
+| ----------- | ---------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
+| Claude Code | SessionStart, UserPromptSubmit, PostToolUse, SessionEnd in `settings.json` | `claude mcp add --scope user inband -- inband shim` | `~/.claude/commands/{lead,join,solo}.md` |
+| Codex       | SessionStart, UserPromptSubmit, Stop in `hooks.json`       | `codex mcp add inband --url .../mcp`   | `~/.codex/skills/{lead,join,solo}/`    |
+| OpenCode    | none: the plugin                                           | `~/.config/opencode/plugin/inband.js`  | `~/.config/opencode/command/{lead,join,solo}.md` |
 
-The systemd unit uses the `bun` binary found in `PATH` at install time.
+What it keeps:
+
+- `tokens.env`: it adds the missing tokens and changes nothing else. The
+  pre-rename `AGENT_BRIDGE_*` names count.
+- `config.json`: it keeps your values and adds what v2 needs, then checks the
+  result with the loader of the daemon. It does not write an invalid config.
+- Your hooks, MCP servers and commands: it replaces only the entries of
+  InBand, v1 included, and leaves a file that is not its own.
+- Every JSON file it changes gets a `.bak` copy first.
 
 ## Mailboxes
 
 Names match `[a-z0-9_-]{1,64}`.
 
-| Client      | Mailbox                          | Set by                                   |
-| ----------- | -------------------------------- | ---------------------------------------- |
-| Claude Code | `claude-<dir>-<session prefix>`  | `hooks/inband-name.sh`             |
-| Codex       | `codex-<session uuid>`           | The daemon, on the Codex SessionStart hook |
-| OpenCode    | `opencode`                       | Fixed                                    |
+| Client      | Mailbox                                 |
+| ----------- | --------------------------------------- |
+| Claude Code | `claude-<dir>-<4 hex of the session>`   |
+| Codex       | `codex-<session uuid>`                  |
+| OpenCode    | `opencode-<16 hex of SHA-256(session)>` |
 
-The Claude Code name uses the first 20 characters of the working directory
-name and the first 4 characters of the session ID. After `/clear`, the session
-ID changes, so the mailbox changes too.
+`<dir>` is the first 20 characters of the working directory name. After
+`/clear` in Claude Code, the session changes, so the mailbox changes too.
 
-Recipient aliases: `codex` is the most recent Codex session. `all` is every
-known mailbox except the sender.
+Recipient aliases: `codex` is the most recent Codex session. `all` is the
+whole team of the sender, for the lead only.
+
+## Teams
+
+A session is a lead or a worker of one team, or solo. It starts solo.
+
+- A worker writes only to the lead of its team.
+- The lead writes to the members of its team, one by one or with `all`.
+- No mail crosses teams. A solo session neither sends nor receives.
+- A new lead turns the previous lead of the team into a worker, with a notice.
+  A join and a leave send a notice to the lead.
+
+The SessionStart hooks, and the OpenCode plugin in the system prompt, give each
+session its mailbox, its role, its lead and the rules of
+[`src/protocol.rs`](../src/protocol.rs). Each message stores the role of its
+sender in `sender_role`, set by the daemon.
+
+Only the user changes teams: a `UserPromptSubmit` hook (a plugin hook in
+OpenCode) applies `/lead x`, `/join x` and `/solo` when they are the whole
+prompt. No tool changes a team.
 
 ## Tools
 
-| Tool                 | Description                                                              |
-| -------------------- | ------------------------------------------------------------------------ |
-| `send_message`       | Send to a mailbox or an alias                                            |
-| `get_messages`       | Return unread messages and mark them as read                             |
-| `wait_for_messages`  | Block until mail arrives. Does not mark mail as read                     |
-| `get_history`        | Read past messages that the token can see                                |
-| `ping`               | Agents, presence, roles, unread counts and recent wakes                  |
-| `claim_lead`         | Make the calling session the lead                                        |
-| `clear_conversation` | Delete all messages. Requires the admin token and `confirm="wipe"`       |
+| Tool                 | Description                                                         |
+| -------------------- | ------------------------------------------------------------------- |
+| `send_message`       | Send to a mailbox of your team, `codex` or `all`                    |
+| `get_messages`       | Return your unread messages and mark them as read                   |
+| `wait_for_messages`  | Block until mail arrives. Does not mark mail as read                |
+| `get_history`        | The mail you sent and received                                      |
+| `ping`               | Agents, presence, teams, roles, unread counts                       |
+| `clear_conversation` | Delete all messages. Admin token only, with `confirm="wipe"`        |
 
 `get_messages` is the only call that marks mail as read. If a response is lost
 on a dropped connection, the mail stays unread.
 
 `wait_for_messages` blocks for up to 1800 s when the client sends a progress
-token. Without one, the daemon limits the wait to 50 s.
+token, with a progress heartbeat every 20 s. Without one, the daemon limits the
+wait to 50 s.
 
-## Roles
-
-`claim_lead` stores the lead in the database and sends a notice to the previous
-lead. `ping` and `/health` return `lead` and a `role` for each agent. Each
-message stores the role of its sender in `sender_role`.
-
-The SessionStart hooks of Claude Code and Codex inject the role of the session,
-the name of the lead and the rules in [`src/protocol.ts`](../src/protocol.ts).
-
-| Client      | `/lead` file                              | Command          |
-| ----------- | ----------------------------------------- | ---------------- |
-| Claude Code | `~/.claude/commands/lead.md`              | `/lead`          |
-| Codex       | `~/.codex/prompts/lead.md`                | `/prompts:lead`  |
-| OpenCode    | `~/.config/opencode/commands/lead.md`     | `/lead`          |
+OpenCode names the tools of the plugin `inband_send_message` and so on.
 
 ## Waking idle sessions
 
-| Client      | Method                                                                    |
-| ----------- | ------------------------------------------------------------------------- |
-| Claude Code | The `inband-channel` MCP server pushes each message into the session |
-| Codex       | `codex queue --thread <id>`. The Codex CLI must support `queue`           |
-| OpenCode    | `POST /session/<id>/prompt_async` to the most recent root session         |
+| Client      | Method                                                              |
+| ----------- | ------------------------------------------------------------------- |
+| Claude Code | The shim pushes each new message into the session as a channel event |
+| Codex       | `codex queue --thread <session>`. The Codex CLI must support `queue` |
+| OpenCode    | `POST /session/<session>/prompt_async` to the session of the mailbox |
 
 Claude Code loads the channel only when it starts with
-`--dangerously-load-development-channels server:inband-channel`. The
-channel reads the session registry of its parent process, so it follows the
-session after `/clear`. If it cannot verify the session, it stops delivery
-until it can. Unread mail replays after a reconnection. The channel event
-shows `from`, `from_role`, `to`, `reply_via` and `sent_at`.
+`--dangerously-load-development-channels server:inband`. The shim reads the
+session registry of its Claude Code process, so it follows the session after
+`/clear`. If it cannot verify the session, it pauses until it can. The channel
+event shows `from`, `from_role`, `to`, `reply_via` and `sent_at`.
 
-Codex and OpenCode wakes obey `debounceSeconds` and `maxWakesPerHour`. A failed
-wake leaves the mail unread. OpenCode must listen on the port of
-`wake.opencode.baseUrl`, for example with `opencode --port 14096`.
-
-On Windows, `scripts/setup-windows-channel.ps1` copies the channel files to
-`%LOCALAPPDATA%\inband-channel` and prints the `.claude.json` entry. That
-entry uses a fixed mailbox from `-Mailbox`.
+Codex and OpenCode wakes obey `debounceSeconds` and `maxWakesPerHour`. The wake
+prompt carries no message content. A failed wake leaves the mail unread.
+OpenCode must listen on the port of `wake.opencode.baseUrl`, for example with
+`opencode --port 14096`.
 
 ## Client machines
 
 A client machine runs agents and uses the daemon of another machine.
 
-1. Copy to the client `tokens.env` the token lines of the clients that run
-   there. Do not copy the admin token. Set mode 600.
-2. Run `./install.sh --client`. It generates no token, writes no `config.json`
-   and installs no service. It installs the hooks and `/lead`, unless you add
-   `--no-hooks`.
+1. Copy to the client `~/.local/share/mcp-servers/inband/tokens.env` the token
+   lines of the clients that run there. Do not copy the admin token.
+2. Run `./install.sh --client`. It generates no token, writes no
+   `config.json` and installs no service.
 3. Forward the daemon port from the daemon host:
 
 ```sh
@@ -129,50 +146,48 @@ only on the loopback interface of the client.
 
 ## Configuration
 
-`config.json`, created from `config.example.json`:
+`~/.local/share/mcp-servers/inband/config.json`, created from
+[`assets/config.example.json`](../assets/config.example.json):
 
 | Key                               | Description                                                       |
 | --------------------------------- | ----------------------------------------------------------------- |
-| `port`                            | Required. 1 to 65535. The hooks expect 7447, see [Limits](#limits) |
-| `maxMessageBytes`                 | Required. 1 to 1048576                                             |
-| `wake`                            | Required. Object with one entry per wake target. Can be empty     |
+| `port`                            | Required. 1 to 65535                                              |
+| `maxMessageBytes`                 | Required. 1 to 1048576                                            |
+| `wake`                            | Object with one entry per wake target. Can be empty               |
 | `auth`                            | Without this object, authentication is off                        |
 | `auth.required`                   | `false` disables authentication. Any other value keeps it on      |
 | `auth.clients.<id>.tokenEnv`      | Name of the variable in `tokens.env` that holds the token         |
 | `auth.clients.<id>.token`         | Inline token, instead of `tokenEnv`                               |
 | `auth.clients.<id>.agents`        | Mailbox patterns that the token can use, for example `claude-*`   |
 | `auth.clients.<id>.directory`     | Mailbox patterns that `ping` and `/health` list. Default: `agents` |
-| `auth.clients.<id>.admin`         | Access to all mailboxes and to `clear_conversation`               |
+| `auth.clients.<id>.admin`         | Access to all mailboxes, every route, and `clear_conversation`    |
 | `wake.<name>.type`                | Required. `codex` or `opencode`                                   |
-| `wake.<name>.prompt`              | Required. Text sent with each wake, 16 KiB maximum                |
+| `wake.<name>.prompt`              | Required. Text sent with each wake, 16 KiB maximum. `{mailbox}` is replaced |
 | `wake.<name>.debounceSeconds`     | Required. Minimum time after a successful wake of the same mailbox, 1 to 3600 |
 | `wake.<name>.maxWakesPerHour`     | Required. Wakes per mailbox per hour, 1 to 3600                   |
 | `wake.codex.command`              | Required. Codex executable. A path or a name, not a shell command |
 | `wake.codex.retryDelaysSeconds`   | Required. Delays between retries of a Codex wake, 16 entries maximum |
 | `wake.opencode.baseUrl`           | Required. URL of the OpenCode server. Loopback only               |
 
-`directory` gives no access to mail or history. Set it to `["*"]` to let a
-client see all agents.
-
 ## Environment variables
 
-| Variable                             | Used by               | Description                                       |
-| ------------------------------------ | --------------------- | ------------------------------------------------- |
-| `INBAND_<CLIENT>_TOKEN`        | All                   | Token of a client, for example `INBAND_CLAUDE_TOKEN` |
-| `INBAND_TOKEN`                 | Shim, Codex hook, hooks | Token used when the client variable is not set |
-| `INBAND_TOKENS_FILE`           | All                   | Path of `tokens.env`                              |
-| `INBAND_BIND`                  | Daemon                | Bind address: `127.0.0.1` (default), `localhost` or `::1` |
-| `INBAND_UNSAFE_REMOTE_BIND`    | Daemon                | `1` allows a non-loopback bind address            |
-| `INBAND_UNSAFE_REMOTE_URLS`    | Daemon, shim, Codex hook | `1` allows non-loopback wake and daemon URLs  |
-| `INBAND_URL`                   | Shim                  | Daemon URL. Default `http://127.0.0.1:7447`       |
-| `INBAND_MAILBOX`               | Shim                  | Fixed mailbox, for a shim outside Claude Code     |
-| `INBAND_CLIENT_ID`             | Shim, Codex hook      | Token client to use. Default `claude` and `codex` |
-| `INBAND_CODEX_HOOK_URL`        | Codex hook            | Default `http://127.0.0.1:7447/codex/hook`        |
-| `INBAND_CODEX_HOOK_TIMEOUT_MS` | Codex hook            | Request timeout. Default 2000                     |
-| `CLAUDE_CONFIG_DIR`                  | Installer, shim       | Claude Code configuration directory. Default `~/.claude` |
+| Variable                     | Used by          | Description                                                  |
+| ---------------------------- | ---------------- | ------------------------------------------------------------ |
+| `INBAND_<CLIENT>_TOKEN`      | All              | Token of a client, for example `INBAND_CLAUDE_TOKEN`          |
+| `INBAND_TOKEN`               | Clients          | Token used when the client variable is not set               |
+| `INBAND_TOKENS_FILE`         | All              | Path of `tokens.env`                                         |
+| `INBAND_HOME`                | Daemon, installer | Install directory. Default `~/.local/share/mcp-servers/inband` |
+| `INBAND_URL`                 | Clients          | Daemon URL. Default: the port of the installed `config.json`, else 7447 |
+| `INBAND_CLIENT_ID`           | Clients          | Token client to use instead of `claude`, `codex` or `opencode` |
+| `INBAND_BIN`                 | OpenCode plugin  | The `inband` binary. The installer bakes its path in         |
+| `INBAND_BIND`                | Daemon           | Bind address: `127.0.0.1` (default), `localhost` or `::1`    |
+| `INBAND_UNSAFE_REMOTE_BIND`  | Daemon           | `1` allows a non-loopback bind address                       |
+| `INBAND_UNSAFE_REMOTE_URLS`  | Daemon, clients  | `1` allows non-loopback wake and daemon URLs                 |
+| `CLAUDE_CONFIG_DIR`          | Installer, shim  | Claude Code configuration directory. Default `~/.claude`     |
+| `CODEX_HOME`                 | Installer        | Codex configuration directory. Default `~/.codex`            |
 
-`tokens.env` contains `NAME=value` lines without `export`. To give the Codex
-token to Codex, export it in the environment that starts `codex`:
+`tokens.env` contains `NAME=value` lines without `export`. Codex reads its MCP
+token from its environment, so export it in the shell that starts `codex`:
 
 ```sh
 set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
@@ -181,40 +196,53 @@ codex
 
 ## HTTP endpoints
 
-The MCP clients use `/mcp`. The other endpoints serve the hooks, the channel
-and monitoring.
+| Endpoint            | Use                                                      |
+| ------------------- | -------------------------------------------------------- |
+| `POST /mcp`         | MCP Streamable HTTP, without MCP sessions                |
+| `GET /health`       | Liveness; the full status for the admin token            |
+| `GET /subscribe`    | Long poll of the shim, 300 s maximum                     |
+| `POST /presence`    | Online and offline state from the Claude Code hooks      |
+| `GET /claude/hook`  | Claude Code SessionStart (binds the mailbox) and PostToolUse |
+| `POST /codex/hook`  | Codex SessionStart and Stop                              |
+| `POST /team/lead`   | `/lead x`                                                |
+| `POST /team/join`   | `/join x`                                                |
+| `POST /team/leave`  | `/solo`                                                  |
 
-| Endpoint            | Use                                                  |
-| ------------------- | ---------------------------------------------------- |
-| `POST /mcp`         | MCP Streamable HTTP                                  |
-| `GET /health`       | Same content as `ping`                               |
-| `GET /subscribe`    | Long poll for the channel shim, 300 s maximum        |
-| `POST /presence`    | Online and offline state from the Claude Code hooks  |
-| `GET /claude/hook`  | Output of the Claude Code SessionStart and PostToolUse hooks |
-| `POST /codex/hook`  | Codex SessionStart and Stop hooks                    |
+The daemon answers only `Host` headers of `127.0.0.1`, `localhost` and `[::1]`,
+and refuses every request with an `Origin` header: a web page cannot reach it.
 
 ## Security
 
-- The daemon binds to `127.0.0.1` and rejects requests without a valid token.
-  Authentication is off when `config.json` has no `auth` object or sets
-  `auth.required` to `false`. The installer always writes an `auth` object.
-- MCP clients send a bearer token. The hooks, the channel shim and the Codex
-  hook sign their requests with HMAC-SHA256, a timestamp and a nonce. The
-  daemon rejects a reused nonce and a timestamp more than 5 minutes from its
-  own clock.
-- A token can use only the mailboxes that match its `agents` patterns. The
-  Claude Code token cannot read or send as a Codex mailbox.
-- `tokens.env`, `config.json` and `bridge.db` have mode 600.
-- Message content comes from other agents. Clients must treat it as untrusted
-  text.
-- Every process of the same Unix user can read `tokens.env` and `bridge.db`.
-  The daemon does not isolate agents of one user from each other.
+The threat is prompt injection: an agent that reads hostile text and tries to
+act as another agent, the lead above all.
+
+- **The daemon knows which session calls.** The hooks, the shim and the
+  OpenCode plugin sign each request with HMAC-SHA256, a timestamp, a nonce and
+  the session. Codex puts its session in the `_meta` of each MCP call itself.
+  The model writes only the tool arguments, so it cannot change either.
+- **A mailbox belongs to one session.** Codex and OpenCode mailboxes carry
+  their session in their name. A Claude Code mailbox is bound to its session
+  at SessionStart. A request for a mailbox of another session is refused,
+  for sending, reading, waiting and team commands alike.
+- **Only the user changes teams**, through the prompt hooks. No tool can make
+  a session the lead.
+- **Message content is untrusted text.** The daemon removes control and
+  invisible characters and escapes `<channel` tags, sets `sender_role` itself,
+  refuses messages that carry a token, and limits the send rate.
+- A token can use only the mailboxes that match its `agents` patterns.
+- `tokens.env`, `config.json` and `bridge.db` have mode 600. The daemon binds
+  to loopback and rejects requests without a valid token.
+
+What it does not cover: every process of the same Unix user can read
+`tokens.env` and sign any request. An agent that runs shell commands can do
+that too. InBand stops impersonation through the tools; it does not isolate
+the processes of one user from each other.
 
 ## Limits
 
-- The hooks, the Codex hook and the installer health check use port 7447. If
-  you change `port`, also set `INBAND_URL` and
-  `INBAND_CODEX_HOOK_URL`, and edit the URLs in `hooks/*.sh`.
-- One lead for all sessions of the daemon.
-- After `/clear` in Claude Code, the mailbox changes. Run `/lead` again if that
-  session was the lead.
+- A machine that only runs agents reaches the daemon on port 7447.
+- Two Claude Code sessions in directories with the same name whose session IDs
+  start with the same 4 hex characters get the same mailbox: the second one is
+  refused and stays outside InBand. Start it again for a new session ID.
+- After `/clear` in Claude Code, the mailbox changes and is solo. Run `/lead x`
+  or `/join x` again.
