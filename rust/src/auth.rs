@@ -14,6 +14,9 @@ pub const CLIENT_HEADER: &str = "x-inband-client";
 pub const TIMESTAMP_HEADER: &str = "x-inband-timestamp";
 pub const NONCE_HEADER: &str = "x-inband-nonce";
 pub const SIGNATURE_HEADER: &str = "x-inband-signature";
+/// The session a signed request acts for. v1 clients never send it, so their signatures stay the
+/// same: the signed payload includes it only when it is present.
+pub const SESSION_HEADER: &str = "x-inband-session";
 const LEGACY_HEADER_PREFIX: &str = "x-agent-bridge-";
 
 const TOKEN_MIN_LENGTH: usize = 32;
@@ -51,6 +54,8 @@ pub enum AuthError {
     Replay,
     #[error("invalid inband request signature")]
     InvalidSignature,
+    #[error("invalid inband session id")]
+    InvalidSession,
     #[error("auth client \"{client}\" is not authorized to use {field}=\"{agent}\"")]
     NotAuthorized {
         client: String,
@@ -254,15 +259,32 @@ impl AuthRuntime {
     /// Authenticates a request signed by a hook or the channel shim.
     ///
     /// # Errors
-    /// Returns an error for missing headers, an unknown client, a stale timestamp, a bad nonce,
-    /// a replayed nonce or a wrong signature.
+    /// See [`Self::verify_signed`].
     pub fn authenticate_signed(
         &self,
         request: &SignedRequest<'_>,
         now_ms: u64,
     ) -> Result<AuthInfo, AuthError> {
+        self.verify_signed(request, now_ms).map(|(info, _)| info)
+    }
+
+    /// Authenticates a signed request and returns its client and the session it was signed for.
+    ///
+    /// # Errors
+    /// Returns an error for missing headers, an unknown client, a stale timestamp, a bad nonce,
+    /// an invalid session id, a replayed nonce or a wrong signature.
+    pub fn verify_signed(
+        &self,
+        request: &SignedRequest<'_>,
+        now_ms: u64,
+    ) -> Result<(AuthInfo, Option<String>), AuthError> {
+        let session = request.header(SESSION_HEADER);
+        if session.is_some_and(|session| !is_valid_session(session)) {
+            return Err(AuthError::InvalidSession);
+        }
+        let session = session.map(str::to_owned);
         if !self.required {
-            return Ok(AuthInfo::disabled());
+            return Ok((AuthInfo::disabled(), session));
         }
         let header = |name: &str| request.header(name);
         let (Some(client_id), Some(timestamp), Some(nonce), Some(signature)) = (
@@ -294,6 +316,7 @@ impl AuthRuntime {
                 body: request.body,
                 timestamp,
                 nonce,
+                session: session.as_deref(),
             },
         );
         if !constant_equal(signature, &expected) {
@@ -310,7 +333,7 @@ impl AuthRuntime {
             return Err(AuthError::Replay);
         }
         seen.insert(key, now_ms);
-        Ok(client.info(AuthMode::Hmac))
+        Ok((client.info(AuthMode::Hmac), session))
     }
 
     /// Bearer when an `Authorization` header is present, signed headers otherwise.
@@ -322,9 +345,23 @@ impl AuthRuntime {
         request: &SignedRequest<'_>,
         now_ms: u64,
     ) -> Result<AuthInfo, AuthError> {
+        self.authenticate_request(request, now_ms)
+            .map(|(info, _)| info)
+    }
+
+    /// Like [`Self::authenticate`], and also returns the session of a signed request. A bearer
+    /// request has no session: its token is shared by every session of its family.
+    ///
+    /// # Errors
+    /// See [`Self::authenticate_bearer`] and [`Self::verify_signed`].
+    pub fn authenticate_request(
+        &self,
+        request: &SignedRequest<'_>,
+        now_ms: u64,
+    ) -> Result<(AuthInfo, Option<String>), AuthError> {
         match request.header("authorization") {
-            Some(authorization) => self.authenticate_bearer(Some(authorization)),
-            None => self.authenticate_signed(request, now_ms),
+            Some(authorization) => Ok((self.authenticate_bearer(Some(authorization))?, None)),
+            None => self.verify_signed(request, now_ms),
         }
     }
 }
@@ -347,6 +384,15 @@ impl<'a> SignedRequest<'a> {
             (self.headers)(&format!("{LEGACY_HEADER_PREFIX}{rest}"))
         })
     }
+}
+
+/// Session ids of Claude Code and Codex (UUIDs) and OpenCode (`ses_…`): no char can end a line of
+/// the signed payload.
+fn is_valid_session(session: &str) -> bool {
+    (1..=128).contains(&session.len())
+        && session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
 
 fn is_valid_nonce(nonce: &str) -> bool {
@@ -422,12 +468,13 @@ struct SigningInput<'a> {
     body: Option<&'a Value>,
     timestamp: &'a str,
     nonce: &'a str,
+    session: Option<&'a str>,
 }
 
 fn signature_value(token: &str, input: &SigningInput<'_>) -> String {
     let body = input.body.map(stable_stringify).unwrap_or_default();
     let digest = hex::encode(Sha256::digest(body.as_bytes()));
-    let payload = [
+    let mut payload = [
         input.method.to_ascii_uppercase().as_str(),
         path_and_query(input.url).as_str(),
         digest.as_str(),
@@ -436,23 +483,28 @@ fn signature_value(token: &str, input: &SigningInput<'_>) -> String {
         input.client_id,
     ]
     .join("\n");
+    if let Some(session) = input.session {
+        payload.push('\n');
+        payload.push_str(session);
+    }
     // HMAC accepts keys of any length, so this cannot fail.
     let mut mac = HmacSha256::new_from_slice(token.as_bytes()).unwrap_or_else(|_| unreachable!());
     mac.update(payload.as_bytes());
     format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
-/// The four signature headers for a request, as `(name, value)` pairs.
+/// The signature headers for a request, as `(name, value)` pairs: four, plus the session header
+/// when the request acts for one session.
 #[must_use]
 pub fn sign_request(
     client_id: &str,
     token: &str,
-    method: &str,
-    url: &str,
-    body: Option<&Value>,
+    request: (&str, &str, Option<&Value>),
     now_ms: u64,
     nonce: Option<&str>,
+    session: Option<&str>,
 ) -> Vec<(&'static str, String)> {
+    let (method, url, body) = request;
     let timestamp = now_ms.to_string();
     let nonce = nonce.map_or_else(|| hex::encode(rand::random::<[u8; 16]>()), str::to_owned);
     let signature = signature_value(
@@ -464,14 +516,19 @@ pub fn sign_request(
             body,
             timestamp: &timestamp,
             nonce: &nonce,
+            session,
         },
     );
-    vec![
+    let mut headers = vec![
         (CLIENT_HEADER, client_id.to_owned()),
         (TIMESTAMP_HEADER, timestamp),
         (NONCE_HEADER, nonce),
         (SIGNATURE_HEADER, signature),
-    ]
+    ];
+    if let Some(session) = session {
+        headers.push((SESSION_HEADER, session.to_owned()));
+    }
+    headers
 }
 
 #[must_use]
@@ -681,11 +738,10 @@ mod tests {
             let headers = sign_request(
                 "claude",
                 &token,
-                method,
-                url,
-                body.as_ref(),
+                (method, url, body.as_ref()),
                 NOW,
                 Some("nonce-abc123"),
+                None,
             );
             assert_eq!(headers[3].1, expected, "{method} {url}");
         }
@@ -715,11 +771,10 @@ mod tests {
             &sign_request(
                 "claude",
                 CLAUDE,
-                "POST",
-                "http://127.0.0.1:7447/presence",
-                Some(&body),
+                ("POST", "http://127.0.0.1:7447/presence", Some(&body)),
                 NOW,
                 Some("nonce-1x"),
+                None,
             ),
             None,
         );
@@ -757,11 +812,80 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_session_cannot_be_changed_added_or_removed() {
+        let auth = runtime();
+        let url = "http://127.0.0.1:7447/mcp";
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call"});
+        let sign = |nonce: &str, session: Option<&str>| {
+            header_map(
+                &sign_request(
+                    "claude",
+                    CLAUDE,
+                    ("POST", url, Some(&body)),
+                    NOW,
+                    Some(nonce),
+                    session,
+                ),
+                None,
+            )
+        };
+        let verify = |headers: &HashMap<String, String>| {
+            let lookup = |name: &str| headers.get(name).map(String::as_str);
+            auth.verify_signed(&signed("POST", url, Some(&body), headers, &lookup), NOW)
+        };
+
+        let (info, session) = verify(&sign("nonce-s1", Some("session-a"))).unwrap();
+        assert_eq!(info.client_id, "claude");
+        assert_eq!(session.as_deref(), Some("session-a"));
+
+        let mut changed = sign("nonce-s2", Some("session-a"));
+        changed.insert(SESSION_HEADER.to_owned(), "session-b".to_owned());
+        assert_eq!(verify(&changed), Err(AuthError::InvalidSignature));
+
+        let mut removed = sign("nonce-s3", Some("session-a"));
+        removed.remove(SESSION_HEADER);
+        assert_eq!(verify(&removed), Err(AuthError::InvalidSignature));
+
+        let mut added = sign("nonce-s4", None);
+        added.insert(SESSION_HEADER.to_owned(), "session-a".to_owned());
+        assert_eq!(verify(&added), Err(AuthError::InvalidSignature));
+
+        for bad in ["", "a\nb", "a b", &"s".repeat(129)] {
+            let mut invalid = sign("nonce-s5", None);
+            invalid.insert(SESSION_HEADER.to_owned(), bad.to_owned());
+            assert_eq!(verify(&invalid), Err(AuthError::InvalidSession), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn bearer_requests_carry_no_session() {
+        let auth = runtime();
+        let headers: HashMap<String, String> = [
+            ("authorization".to_owned(), format!("Bearer {CLAUDE}")),
+            (SESSION_HEADER.to_owned(), "session-a".to_owned()),
+        ]
+        .into();
+        let lookup = |name: &str| headers.get(name).map(String::as_str);
+        let (info, session) = auth
+            .authenticate_request(&signed("POST", "/mcp", None, &headers, &lookup), NOW)
+            .unwrap();
+        assert_eq!(info.mode, AuthMode::Bearer);
+        assert_eq!(session, None);
+    }
+
+    #[test]
     fn accepts_the_pre_rename_header_names() {
         let auth = runtime();
         let url = "http://127.0.0.1:7447/claude/hook?agent=claude-api-a1b2&event=SessionStart";
         let headers = header_map(
-            &sign_request("claude", CLAUDE, "GET", url, None, NOW, Some("legacy-1")),
+            &sign_request(
+                "claude",
+                CLAUDE,
+                ("GET", url, None),
+                NOW,
+                Some("legacy-1"),
+                None,
+            ),
             Some("x-agent-bridge-"),
         );
         let lookup = |name: &str| headers.get(name).map(String::as_str);
@@ -779,11 +903,10 @@ mod tests {
             &sign_request(
                 "claude",
                 CLAUDE,
-                "GET",
-                "/health",
-                None,
+                ("GET", "/health", None),
                 NOW,
                 Some("bad nonce!"),
+                None,
             ),
             None,
         );
@@ -796,11 +919,10 @@ mod tests {
             &sign_request(
                 "ghost",
                 CLAUDE,
-                "GET",
-                "/health",
-                None,
+                ("GET", "/health", None),
                 NOW,
                 Some("nonce-ok"),
+                None,
             ),
             None,
         );
