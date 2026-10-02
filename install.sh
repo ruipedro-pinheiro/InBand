@@ -163,6 +163,7 @@ if [ "$DO_HOOKS" = 1 ]; then
     mkdir -p "$CLAUDE_DIR/hooks"
     cp "$ROOT"/hooks/inband-*.sh "$CLAUDE_DIR/hooks/"
     chmod +x "$CLAUDE_DIR"/hooks/inband-*.sh
+    rm -f "$CLAUDE_DIR"/hooks/agent-bridge-*.sh
     say "copied hooks to $CLAUDE_DIR/hooks/"
 
     SETTINGS="$CLAUDE_DIR/settings.json"
@@ -173,6 +174,19 @@ if [ "$DO_HOOKS" = 1 ]; then
       const [file, hooksDir] = process.argv.slice(1);
       const s = JSON.parse(fs.readFileSync(file, "utf8"));
       s.hooks ??= {};
+      // Drop the hooks of the project before its rename to InBand.
+      let removed = 0;
+      for (const event of Object.keys(s.hooks)) {
+        if (!Array.isArray(s.hooks[event])) continue;
+        s.hooks[event] = s.hooks[event].filter((group) => {
+          if (!Array.isArray(group?.hooks)) return true;
+          const before = group.hooks.length;
+          group.hooks = group.hooks.filter((hook) => !String(hook.command ?? "").includes("/agent-bridge-"));
+          removed += before - group.hooks.length;
+          return group.hooks.length > 0;
+        });
+      }
+      if (removed > 0) console.log(`  removed ${removed} agent-bridge hook(s) from settings.json`);
       const want = [
         ["SessionStart", "inband-name.sh",       null, undefined],
         ["SessionEnd",   "inband-disconnect.sh", null, 5],
@@ -212,7 +226,13 @@ if [ "$DO_HOOKS" = 1 ]; then
         ["Stop", "Checking the inband mailbox"],
       ]) {
         s.hooks[event] ??= [];
-        if (JSON.stringify(s.hooks[event]).includes("codex-hook.ts")) continue;
+        // An existing entry can point to an old checkout, for example the pre-rename agent-bridge path.
+        const existing = s.hooks[event].flatMap((group) => group?.hooks ?? [])
+          .filter((hook) => String(hook.command ?? "").includes("codex-hook.ts"));
+        if (existing.length > 0) {
+          for (const hook of existing) hook.command = command;
+          continue;
+        }
         s.hooks[event].push({ hooks: [{ type: "command", command, statusMessage, timeout: 5 }] });
         added++;
       }
@@ -231,7 +251,7 @@ if [ "$DO_HOOKS" = 1 ]; then
     fi
     mkdir -p "$target_dir"
     local target="$target_dir/lead.md"
-    if [ -f "$target" ] && ! cmp -s "$ROOT/commands/$client/lead.md" "$target"; then
+    if [ -f "$target" ] && ! cmp -s "$ROOT/commands/$client/lead.md" "$target" && ! grep -q 'agent-bridge' "$target"; then
       say "$client: $target exists and differs, left untouched"
       return
     fi
@@ -249,6 +269,12 @@ if [ "$DO_SERVICE" = 1 ]; then
     say "no systemctl, start the daemon yourself: bun run src/index.ts"
   else
     mkdir -p "$UNIT_DIR"
+    if [ -f "$UNIT_DIR/agent-bridge.service" ]; then
+      # The pre-rename unit holds the same port.
+      systemctl --user disable --now agent-bridge >/dev/null 2>&1 || true
+      rm -f "$UNIT_DIR/agent-bridge.service"
+      say "stopped and removed the old agent-bridge service"
+    fi
     sed -e "s|%h/.bun/bin/bun|$BUN_BIN|g" \
         -e "s|%h/.local/share/mcp-servers/inband|$ROOT|g" \
       "$ROOT/inband.service.example" > "$UNIT_DIR/inband.service"

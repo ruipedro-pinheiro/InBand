@@ -68,6 +68,19 @@ describe("inband auth", () => {
     ).toThrow(/replay/i);
   });
 
+  test("accepts signed requests from hooks that predate the rename", () => {
+    const request = {
+      method: "GET",
+      url: "http://127.0.0.1:7447/claude/hook?agent=claude-api-a1b2&event=SessionStart",
+    };
+    const signed = signInbandRequest({ clientId: "claude", token: CLAUDE_TOKEN, ...request, nonce: "legacy-1" });
+    const legacy = Object.fromEntries(
+      Object.entries(signed).map(([name, value]) => [name.replace("x-inband-", "x-agent-bridge-"), value]),
+    );
+
+    expect(authenticateSignedRequest(runtime(), { ...request, headers: legacy }).clientId).toBe("claude");
+  });
+
   test("rejects weak token config and invalid agent patterns", () => {
     expect(() =>
       buildAuthRuntime({
