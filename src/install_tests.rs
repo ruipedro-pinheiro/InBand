@@ -210,6 +210,10 @@ fn v1_install(home: &Path) {
         r#"{"mcp": {"inband": {"type": "remote", "url": "http://127.0.0.1:7447/mcp"}, "other": {"type": "local"}}}"#,
     );
     write(
+        &home.join(".config/opencode/opencode.jsonc"),
+        r#"{"mcp": {"inband": {"type": "remote", "headers": {"Authorization": "Bearer x"}}}}"#,
+    );
+    write(
         &home.join(".config/opencode/commands/lead.md"),
         "Call the inband tool `claim_lead`",
     );
@@ -278,6 +282,11 @@ fn a_v1_install_is_migrated_and_the_files_of_the_user_are_kept() {
     let opencode = json_file(&home.join(".config/opencode/opencode.json"));
     assert!(opencode["mcp"].get("inband").is_none());
     assert!(opencode["mcp"]["other"].is_object());
+    let jsonc = json_file(&home.join(".config/opencode/opencode.jsonc"));
+    assert!(
+        jsonc["mcp"].get("inband").is_none(),
+        "opencode mcp add writes .jsonc"
+    );
     assert!(!home.join(".config/opencode/commands/lead.md").exists());
 
     let calls = runner.calls();
@@ -358,5 +367,23 @@ fn an_invalid_config_is_reported_and_left_alone() {
     assert_eq!(
         std::fs::read_to_string(data(&home).join("config.json")).unwrap(),
         before
+    );
+}
+
+#[test]
+fn an_opencode_config_with_comments_is_left_to_the_user() {
+    let home = home("jsonc");
+    let text = "{\n  // mine\n  \"mcp\": {\"inband\": {\"type\": \"remote\"}}\n}\n";
+    write(&home.join(".config/opencode/opencode.jsonc"), text);
+    let report = install(&options(&home, false), &FakeRunner::new(&[])).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(home.join(".config/opencode/opencode.jsonc")).unwrap(),
+        text
+    );
+    assert!(
+        report
+            .todo
+            .iter()
+            .any(|item| item.contains("opencode.jsonc"))
     );
 }

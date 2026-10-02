@@ -706,28 +706,32 @@ fn install_opencode(dir: &Path, binary: &Path, report: &mut Report) -> Result<()
     report.say("plugin and commands /lead, /join and /solo installed");
 
     // The plugin serves the tools now; the v1 MCP entry would list each tool twice.
-    let config_path = dir.join("opencode.json");
-    if config_path.exists() {
-        let (before, mut config) = read_json(&config_path)?;
+    // `opencode mcp add` writes opencode.jsonc, and JSON with comments cannot be rewritten
+    // without losing them: such a file is left to the user.
+    for name in ["opencode.json", "opencode.jsonc"] {
+        let path = dir.join(name);
+        let Some(text) = read_optional(&path)? else {
+            continue;
+        };
+        if !text.contains("\"inband\"") {
+            continue;
+        }
+        let Ok(mut config) = serde_json::from_str::<Value>(&text) else {
+            report.todo.push(format!(
+                "Remove the v1 \"inband\" MCP server from {}: the plugin replaces it",
+                path.display()
+            ));
+            continue;
+        };
         let removed = config
             .get_mut("mcp")
             .and_then(Value::as_object_mut)
             .and_then(|servers| servers.remove("inband"))
             .is_some();
         if removed {
-            write_json(&config_path, before.as_deref(), &config)?;
-            report.say(format!(
-                "removed the v1 MCP entry from {}",
-                config_path.display()
-            ));
+            write_json(&path, Some(&text), &config)?;
+            report.say(format!("removed the v1 MCP entry from {}", path.display()));
         }
-    }
-    let jsonc = dir.join("opencode.jsonc");
-    if read_optional(&jsonc)?.is_some_and(|text| text.contains("\"inband\"")) {
-        report.todo.push(format!(
-            "Remove the v1 \"inband\" MCP server from {}: the plugin replaces it",
-            jsonc.display()
-        ));
     }
     report.todo.push(
         "OpenCode wakes need its server on the port of wake.opencode.baseUrl (default: opencode --port 14096)"
