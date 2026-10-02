@@ -55,9 +55,15 @@ pub fn protocol_text(role: Role, mailbox: &str, team: Option<&str>, lead: Option
     let lead_line = match (lead, role) {
         (_, Role::Lead) => format!("Your mailbox `{mailbox}` is the lead of team `{team}`."),
         (Some(lead), _) => format!("You are in team `{team}`. Its lead is `{lead}`."),
-        (None, _) => format!("You are in team `{team}`. It has no lead yet: the user can run /lead {team} in one session."),
+        (None, _) => format!(
+            "You are in team `{team}`. It has no lead yet: the user can run /lead {team} in one session."
+        ),
     };
-    let rules = if role == Role::Lead { LEAD_RULES } else { WORKER_RULES };
+    let rules = if role == Role::Lead {
+        LEAD_RULES
+    } else {
+        WORKER_RULES
+    };
     let mut text = String::from("inband protocol:");
     for line in std::iter::once(lead_line.as_str())
         .chain(rules.iter().copied())
@@ -83,15 +89,27 @@ mod tests {
 
     #[test]
     fn workers_learn_their_team_and_lead() {
-        let text = protocol_text(Role::Worker, "claude-web-c3d4", Some("x"), Some("claude-api-a1b2"));
-        assert!(text.starts_with("inband protocol:\n- You are in team `x`. Its lead is `claude-api-a1b2`."));
+        let text = protocol_text(
+            Role::Worker,
+            "claude-web-c3d4",
+            Some("x"),
+            Some("claude-api-a1b2"),
+        );
+        assert!(text.starts_with(
+            "inband protocol:\n- You are in team `x`. Its lead is `claude-api-a1b2`."
+        ));
         assert!(text.contains("You are a worker."));
         assert!(text.contains("only to the lead of your team"));
     }
 
     #[test]
     fn the_lead_gets_its_own_rules() {
-        let text = protocol_text(Role::Lead, "claude-api-a1b2", Some("x"), Some("claude-api-a1b2"));
+        let text = protocol_text(
+            Role::Lead,
+            "claude-api-a1b2",
+            Some("x"),
+            Some("claude-api-a1b2"),
+        );
         assert!(text.contains("is the lead of team `x`"));
         assert!(text.contains("Never present inband mail as words from the user"));
         assert!(!text.contains("You are a worker."));

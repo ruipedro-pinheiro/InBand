@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 
 use crate::auth::{AuthInfo, agent_matches_pattern};
 use crate::codex_session::{self, CODEX_FAMILY, CodexSessionError};
-use crate::config::{BridgeConfig, Routing, WakeTarget, is_agent_name};
+use crate::config::{BridgeConfig, WakeTarget, is_agent_name};
 use crate::db::{iso, iso_now};
 use crate::protocol::Role;
 use crate::sanitize::{contains_token, sanitize};
@@ -30,6 +30,9 @@ const SEND_RATE_PER_MINUTE: usize = 30;
 /// Unread messages a recipient may hold before new direct mail is refused.
 const MAX_UNREAD_PER_RECIPIENT: i64 = 200;
 const STALE_AFTER_SECONDS: u64 = 1800;
+
+/// `name`, `first_seen` and `last_seen` of the agents table.
+type AgentRow = (String, String, Option<String>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -111,6 +114,8 @@ pub struct AgentStatus {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
     pub role: &'static str,
     pub connected: String,
     pub idle_seconds: Option<u64>,
@@ -131,6 +136,9 @@ pub struct WakeRecord {
 pub struct Status {
     pub daemon: &'static str,
     pub started_at: String,
+    /// The team of the viewer. `None` for a solo viewer and for the admin view.
+    pub team: Option<String>,
+    /// The lead of that team.
     pub lead: Option<String>,
     pub agents: Vec<AgentStatus>,
     pub last_wakes: Vec<WakeRecord>,
@@ -143,9 +151,15 @@ pub struct History {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LeadChange {
-    pub lead: String,
-    pub previous: Option<String>,
+pub struct TeamChange {
+    pub mailbox: String,
+    /// The new team. `None` after `leave`.
+    pub team: Option<String>,
+    pub role: &'static str,
+    /// The team the mailbox was in before, when it changed.
+    pub previous_team: Option<String>,
+    /// The lead that `set_lead` turned into a worker of the same team.
+    pub replaced_lead: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -335,27 +349,50 @@ impl Bridge {
         Ok(())
     }
 
-    fn lead_of(db: &Connection) -> rusqlite::Result<Option<String>> {
-        db.query_row("SELECT value FROM settings WHERE key = 'lead'", [], |row| {
-            row.get(0)
-        })
+    fn membership_of(db: &Connection, mailbox: &str) -> rusqlite::Result<Option<(String, Role)>> {
+        db.query_row(
+            "SELECT team, role FROM members WHERE mailbox = ?1",
+            [mailbox],
+            |row| {
+                let role: String = row.get(1)?;
+                let role = if role == "lead" {
+                    Role::Lead
+                } else {
+                    Role::Worker
+                };
+                Ok((row.get(0)?, role))
+            },
+        )
         .optional()
+    }
+
+    fn lead_of_team(db: &Connection, team: &str) -> rusqlite::Result<Option<String>> {
+        db.query_row(
+            "SELECT mailbox FROM members WHERE team = ?1 AND role = 'lead'",
+            [team],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+
+    /// The team and role of a mailbox, or `None` for a solo session.
+    ///
+    /// # Errors
+    /// Returns SQLite errors.
+    pub fn membership(&self, name: &str) -> Result<Option<(String, Role)>, BridgeError> {
+        Ok(Self::membership_of(&lock(&self.db), name)?)
     }
 
     /// # Errors
     /// Returns SQLite errors.
-    pub fn lead(&self) -> Result<Option<String>, BridgeError> {
-        Ok(Self::lead_of(&lock(&self.db))?)
+    pub fn team_lead(&self, team: &str) -> Result<Option<String>, BridgeError> {
+        Ok(Self::lead_of_team(&lock(&self.db), team)?)
     }
 
     /// # Errors
     /// Returns SQLite errors.
     pub fn role_of(&self, name: &str) -> Result<Role, BridgeError> {
-        Ok(if self.lead()?.as_deref() == Some(name) {
-            Role::Lead
-        } else {
-            Role::Worker
-        })
+        Ok(self.membership(name)?.map_or(Role::Solo, |(_, role)| role))
     }
 
     fn bound_session(db: &Connection, mailbox: &str) -> rusqlite::Result<Option<String>> {
@@ -397,24 +434,39 @@ impl Bridge {
         }
     }
 
+    /// Star routing inside one team. A solo session neither sends nor receives.
     fn check_routing(
-        &self,
-        caller: &Caller,
-        lead: Option<&str>,
-        from: &str,
+        db: &Connection,
+        sender: Option<&(String, Role)>,
         to: &str,
     ) -> Result<(), BridgeError> {
-        if self.config.routing == Routing::Mesh || caller.auth.admin || lead == Some(from) {
+        let Some((team, role)) = sender else {
+            return Err(BridgeError::Routing(
+                "the sender is not in a team; only the user adds a session to a team",
+            ));
+        };
+        if to == "all" {
+            return if *role == Role::Lead {
+                Ok(())
+            } else {
+                Err(BridgeError::Routing("only the lead can write to all"))
+            };
+        }
+        match Self::membership_of(db, to)? {
+            Some((to_team, _)) if to_team == *team => {}
+            _ => {
+                return Err(BridgeError::Routing(
+                    "the recipient is not in the sender's team",
+                ));
+            }
+        }
+        if *role == Role::Lead {
             return Ok(());
         }
-        if to == "all" {
-            return Err(BridgeError::Routing("only the lead can write to all"));
-        }
-        match lead {
-            Some(lead) if lead != to => {
-                Err(BridgeError::Routing("a worker can write only to the lead"))
-            }
-            _ => Ok(()),
+        match Self::lead_of_team(db, team)? {
+            Some(lead) if lead == to => Ok(()),
+            Some(_) => Err(BridgeError::Routing("a worker can write only to the lead")),
+            None => Err(BridgeError::Routing("the team has no lead")),
         }
     }
 
@@ -523,7 +575,7 @@ impl Bridge {
         // One transaction: a concurrent registration must not change the target between check and insert.
         let routed = {
             let mut db = lock(&self.db);
-            self.route_and_insert(&mut db, caller, &from, &requested_to, &cleaned, &now)
+            Self::route_and_insert(&mut db, caller, &from, &requested_to, &cleaned, &now)
         };
         let Routed {
             id,
@@ -585,7 +637,6 @@ impl Bridge {
 
     /// Checks identity, target and routing, then stores the message, all in one transaction.
     fn route_and_insert(
-        &self,
         db: &mut Connection,
         caller: &Caller,
         from: &str,
@@ -607,8 +658,11 @@ impl Bridge {
         if resolved_to == from {
             return Err(BridgeError::SelfSend);
         }
-        let lead = Self::lead_of(&tx)?;
-        self.check_routing(caller, lead.as_deref(), from, &resolved_to)?;
+        let membership = Self::membership_of(&tx, from)?;
+        // The admin token belongs to the user, who is outside the teams.
+        if !caller.auth.admin {
+            Self::check_routing(&tx, membership.as_ref(), &resolved_to)?;
+        }
         if resolved_to != "all" {
             let unread: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM deliveries WHERE recipient = ?1 AND read_at IS NULL",
@@ -619,18 +673,23 @@ impl Bridge {
                 return Err(BridgeError::RecipientFull(resolved_to));
             }
         }
-        let sender_role = if lead.as_deref() == Some(from) {
-            Role::Lead
-        } else {
-            Role::Worker
-        };
+        let sender_role = membership.as_ref().map_or(Role::Solo, |(_, role)| *role);
 
         Self::touch_agent_tx(&tx, from)?;
         let recipients: Vec<String> = if resolved_to == "all" {
-            let mut statement =
-                tx.prepare("SELECT name FROM agents WHERE name != ?1 ORDER BY name")?;
-            let names = statement.query_map([from], |row| row.get(0))?;
-            names.collect::<Result<_, _>>()?
+            // `all` is the sender's team. Only the admin, outside any team, reaches every agent.
+            if let Some((team, _)) = &membership {
+                let mut statement = tx.prepare(
+                    "SELECT mailbox FROM members WHERE team = ?1 AND mailbox != ?2 ORDER BY mailbox",
+                )?;
+                let names = statement.query_map([team.as_str(), from], |row| row.get(0))?;
+                names.collect::<Result<_, _>>()?
+            } else {
+                let mut statement =
+                    tx.prepare("SELECT name FROM agents WHERE name != ?1 ORDER BY name")?;
+                let names = statement.query_map([from], |row| row.get(0))?;
+                names.collect::<Result<_, _>>()?
+            }
         } else {
             tx.execute(
                 "INSERT INTO agents(name, first_seen, last_seen) VALUES (?1, ?2, NULL) ON CONFLICT(name) DO NOTHING",
@@ -678,43 +737,141 @@ impl Bridge {
         Ok(())
     }
 
-    /// Makes `mailbox_raw` the lead. Only a request signed by the mailbox's own session may do it.
+    /// Mailboxes join and leave teams only through these three calls. The daemon exposes them to
+    /// signed requests from the user's own commands, never as MCP tools, so a model cannot call them.
+    fn prepare_member(
+        &self,
+        caller: &Caller,
+        mailbox_raw: &str,
+    ) -> Result<(String, MutexGuard<'_, Connection>), BridgeError> {
+        let mailbox = Self::normalize_agent(mailbox_raw, "mailbox")?;
+        Self::require_concrete(&mailbox)?;
+        let mut db = lock(&self.db);
+        Self::require_registered_codex(&db, &mailbox)?;
+        Self::check_identity(&db, caller, &mailbox)?;
+        Self::touch_agent(&mut db, &mailbox)?;
+        Ok((mailbox, db))
+    }
+
+    /// Daemon notices about team changes. They pass the checks as the admin, since they come from
+    /// the daemon itself, and a failed notice never undoes the change.
+    fn notify(self: &Arc<Self>, from: &str, to: &str, content: &str) {
+        let daemon = Caller {
+            auth: AuthInfo::disabled(),
+            session: None,
+        };
+        if let Err(error) = self.send(&daemon, from, to, content) {
+            eprintln!("inband: could not notify {to}: {error}");
+        }
+    }
+
+    /// Makes `mailbox_raw` the lead of `team_raw`, and creates the team when it does not exist.
+    /// The previous lead of that team becomes a worker and gets a notice.
     ///
     /// # Errors
-    /// Returns an error for an invalid mailbox, a mailbox bound to another session, or SQLite.
+    /// Returns an error for an invalid name, a mailbox bound to another session, or SQLite.
     pub fn set_lead(
         self: &Arc<Self>,
         caller: &Caller,
         mailbox_raw: &str,
-    ) -> Result<LeadChange, BridgeError> {
-        let mailbox = Self::normalize_agent(mailbox_raw, "from")?;
-        let previous = {
-            let mut db = lock(&self.db);
-            Self::check_identity(&db, caller, &mailbox)?;
-            Self::touch_agent(&mut db, &mailbox)?;
-            let previous = Self::lead_of(&db)?;
-            db.execute(
-                "INSERT INTO settings(key, value, updated_at) VALUES ('lead', ?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?2",
-                params![mailbox, iso_now()],
+        team_raw: &str,
+    ) -> Result<TeamChange, BridgeError> {
+        let team = Self::normalize_agent(team_raw, "team")?;
+        let (mailbox, mut db) = self.prepare_member(caller, mailbox_raw)?;
+        let tx = db.transaction()?;
+        let previous_team = Self::membership_of(&tx, &mailbox)?.map(|(team, _)| team);
+        let replaced_lead = Self::lead_of_team(&tx, &team)?.filter(|lead| *lead != mailbox);
+        if let Some(lead) = &replaced_lead {
+            tx.execute(
+                "UPDATE members SET role = 'worker' WHERE mailbox = ?1",
+                [lead],
             )?;
-            previous
-        };
-        let previous = previous.filter(|previous| *previous != mailbox);
-        if let Some(previous) = &previous {
-            let notice = format!("{mailbox} is now the lead. You are a worker from now on.");
-            let lead_caller = Caller {
-                auth: AuthInfo::disabled(),
-                session: None,
-            };
-            if let Err(error) = self.send(&lead_caller, &mailbox, previous, &notice) {
-                // A previous lead whose Codex session is gone cannot receive mail. The change still applies.
-                eprintln!("inband: could not notify the previous lead {previous}: {error}");
-            }
         }
-        Ok(LeadChange {
-            lead: mailbox,
-            previous,
+        tx.execute(
+            "INSERT INTO members(mailbox, team, role, joined_at) VALUES (?1, ?2, 'lead', ?3)
+             ON CONFLICT(mailbox) DO UPDATE SET team = ?2, role = 'lead', joined_at = ?3",
+            params![mailbox, team, iso_now()],
+        )?;
+        tx.commit()?;
+        drop(db);
+        if let Some(lead) = &replaced_lead {
+            self.notify(
+                &mailbox,
+                lead,
+                &format!("{mailbox} is now the lead of team {team}. You are a worker of this team from now on."),
+            );
+        }
+        Ok(TeamChange {
+            mailbox,
+            previous_team: previous_team.filter(|previous| *previous != team),
+            team: Some(team),
+            role: Role::Lead.as_str(),
+            replaced_lead,
+        })
+    }
+
+    /// Adds `mailbox_raw` to `team_raw` as a worker. The lead of the team gets a notice.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid name, a mailbox bound to another session, or SQLite.
+    pub fn join(
+        self: &Arc<Self>,
+        caller: &Caller,
+        mailbox_raw: &str,
+        team_raw: &str,
+    ) -> Result<TeamChange, BridgeError> {
+        let team = Self::normalize_agent(team_raw, "team")?;
+        let (mailbox, db) = self.prepare_member(caller, mailbox_raw)?;
+        let previous_team = Self::membership_of(&db, &mailbox)?.map(|(team, _)| team);
+        db.execute(
+            "INSERT INTO members(mailbox, team, role, joined_at) VALUES (?1, ?2, 'worker', ?3)
+             ON CONFLICT(mailbox) DO UPDATE SET team = ?2, role = 'worker', joined_at = ?3",
+            params![mailbox, team, iso_now()],
+        )?;
+        let lead = Self::lead_of_team(&db, &team)?;
+        drop(db);
+        if let Some(lead) = lead {
+            self.notify(
+                &mailbox,
+                &lead,
+                &format!("{mailbox} joined team {team} as a worker."),
+            );
+        }
+        Ok(TeamChange {
+            mailbox,
+            previous_team: previous_team.filter(|previous| *previous != team),
+            team: Some(team),
+            role: Role::Worker.as_str(),
+            replaced_lead: None,
+        })
+    }
+
+    /// Removes `mailbox_raw` from its team: the session becomes solo. The lead gets a notice.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid name, a mailbox bound to another session, or SQLite.
+    pub fn leave(
+        self: &Arc<Self>,
+        caller: &Caller,
+        mailbox_raw: &str,
+    ) -> Result<TeamChange, BridgeError> {
+        let (mailbox, db) = self.prepare_member(caller, mailbox_raw)?;
+        let previous = Self::membership_of(&db, &mailbox)?;
+        db.execute("DELETE FROM members WHERE mailbox = ?1", [&mailbox])?;
+        let lead = match &previous {
+            Some((team, Role::Worker)) => Self::lead_of_team(&db, team)?,
+            _ => None,
+        };
+        drop(db);
+        if let (Some(lead), Some((team, _))) = (lead, &previous) {
+            self.notify(&mailbox, &lead, &format!("{mailbox} left team {team}."));
+        }
+        Ok(TeamChange {
+            mailbox,
+            previous_team: previous.map(|(team, _)| team),
+            team: None,
+            role: Role::Solo.as_str(),
+            replaced_lead: None,
         })
     }
 
@@ -1015,27 +1172,64 @@ impl Bridge {
         Ok(History { messages, total })
     }
 
+    fn all_members(db: &Connection) -> rusqlite::Result<HashMap<String, (String, Role)>> {
+        let mut statement = db.prepare("SELECT mailbox, team, role FROM members")?;
+        let rows = statement.query_map([], |row| {
+            let role: String = row.get(2)?;
+            let role = if role == "lead" {
+                Role::Lead
+            } else {
+                Role::Worker
+            };
+            Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, role)))
+        })?;
+        rows.collect()
+    }
+
     /// Agents, presence, roles, unread counts and the last wakes.
+    ///
+    /// With a `viewer`, the list holds only the viewer's team, or only the viewer when it is solo.
+    /// Without one (the admin view), it holds every agent.
     ///
     /// # Errors
     /// Returns SQLite errors.
     pub fn status(
         &self,
+        viewer: Option<&str>,
         visible: Option<&[String]>,
         wake_visible: Option<&[String]>,
     ) -> Result<Status, BridgeError> {
-        let lead = self.lead()?;
-        let names: Vec<(String, String, Option<String>)> = {
+        let (members, names) = {
             let db = lock(&self.db);
+            let members = Self::all_members(&db)?;
             let mut statement =
                 db.prepare("SELECT name, first_seen, last_seen FROM agents ORDER BY name")?;
             let rows =
                 statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-            rows.collect::<Result<_, _>>()?
+            let names: Vec<AgentRow> = rows.collect::<Result<_, _>>()?;
+            (members, names)
         };
+        let team = viewer
+            .and_then(|v| members.get(v))
+            .map(|(team, _)| team.clone());
+        let lead = team.as_ref().and_then(|team| {
+            members
+                .iter()
+                .find(|(_, (t, role))| t == team && *role == Role::Lead)
+                .map(|(mailbox, _)| mailbox.clone())
+        });
         let now = SystemTime::now();
         let mut agents = Vec::new();
         for (name, first_seen, last_seen) in names {
+            let membership = members.get(&name);
+            if let Some(viewer) = viewer {
+                let same_team = team
+                    .as_ref()
+                    .is_some_and(|team| membership.is_some_and(|(t, _)| t == team));
+                if name != viewer && !same_team {
+                    continue;
+                }
+            }
             if visible
                 .is_some_and(|patterns| !patterns.iter().any(|p| agent_matches_pattern(&name, p)))
             {
@@ -1067,11 +1261,8 @@ impl Bridge {
                 (codex, unread)
             };
             agents.push(AgentStatus {
-                role: if lead.as_deref() == Some(name.as_str()) {
-                    "lead"
-                } else {
-                    "worker"
-                },
+                team: membership.map(|(team, _)| team.clone()),
+                role: membership.map_or(Role::Solo, |(_, role)| *role).as_str(),
                 display_label: codex.as_ref().map(|c| c.display_label.clone()),
                 cwd: codex.as_ref().map(|c| c.cwd.clone()),
                 lifecycle: codex.map(|c| c.lifecycle),
@@ -1084,7 +1275,25 @@ impl Bridge {
                 unread,
             });
         }
-        let last_wakes = {
+        let last_wakes = self.last_wakes(viewer.is_some(), &agents, wake_visible)?;
+        Ok(Status {
+            daemon: "inband",
+            started_at: self.started_at.clone(),
+            team,
+            lead,
+            agents,
+            last_wakes,
+        })
+    }
+
+    /// The last five wakes. A team view keeps only the wakes of its listed agents.
+    fn last_wakes(
+        &self,
+        team_view: bool,
+        agents: &[AgentStatus],
+        wake_visible: Option<&[String]>,
+    ) -> Result<Vec<WakeRecord>, BridgeError> {
+        let wakes = {
             let db = lock(&self.db);
             let mut statement = db.prepare(
                 "SELECT recipient, created_at, ok, detail FROM wakes ORDER BY id DESC LIMIT 5",
@@ -1100,6 +1309,9 @@ impl Bridge {
             rows.collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|wake| {
+                    !team_view || agents.iter().any(|agent| agent.name == wake.recipient)
+                })
+                .filter(|wake| {
                     wake_visible.is_none_or(|patterns| {
                         patterns
                             .iter()
@@ -1108,13 +1320,7 @@ impl Bridge {
                 })
                 .collect()
         };
-        Ok(Status {
-            daemon: "inband",
-            started_at: self.started_at.clone(),
-            lead,
-            agents,
-            last_wakes,
-        })
+        Ok(wakes)
     }
 
     /// Deletes all messages and deliveries. The audit log stays.

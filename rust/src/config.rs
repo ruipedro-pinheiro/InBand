@@ -19,17 +19,6 @@ pub struct BridgeConfig {
     pub max_message_bytes: usize,
     pub auth: Option<AuthConfig>,
     pub wake: BTreeMap<String, WakeTarget>,
-    pub routing: Routing,
-}
-
-/// Who may write to whom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Routing {
-    /// Workers write only to the lead. Only the lead and admin write to `all`.
-    #[default]
-    Star,
-    /// Any agent writes to any agent. The v1 behavior.
-    Mesh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +80,6 @@ pub enum Problem {
     MissingToken,
     TooManyEntries { max: usize },
     UnknownWakeType,
-    UnknownRouting,
     InvalidUrl,
     NotHttp,
     NonLoopback { unsafe_variable: &'static str },
@@ -118,7 +106,6 @@ impl fmt::Display for Problem {
             Self::MissingToken => write!(f, "must define token or tokenEnv"),
             Self::TooManyEntries { max } => write!(f, "must have at most {max} entries"),
             Self::UnknownWakeType => write!(f, "must be \"opencode\" or \"codex\""),
-            Self::UnknownRouting => write!(f, "must be \"star\" or \"mesh\""),
             Self::InvalidUrl => write!(f, "is not a valid URL"),
             Self::NotHttp => write!(f, "must be an http URL"),
             Self::NonLoopback { unsafe_variable } => write!(
@@ -429,12 +416,6 @@ pub fn load_bridge_config(raw: &str, env: &EnvMap) -> Result<BridgeConfig, Confi
         wake.insert(name.clone(), wake_target(name, target, env)?);
     }
 
-    let routing = match fields.get("routing").map(Value::as_str) {
-        None | Some(Some("star")) => Routing::Star,
-        Some(Some("mesh")) => Routing::Mesh,
-        Some(_) => return Err(invalid("routing", Problem::UnknownRouting)),
-    };
-
     let port = integer(fields.get("port"), "port", 1, 65_535)?;
     let max_message_bytes = integer(
         fields.get("maxMessageBytes"),
@@ -463,7 +444,6 @@ pub fn load_bridge_config(raw: &str, env: &EnvMap) -> Result<BridgeConfig, Confi
         })?,
         auth: auth_config(fields.get("auth"))?,
         wake,
-        routing,
     })
 }
 
@@ -554,7 +534,6 @@ mod tests {
     fn accepts_a_valid_config_and_normalizes_wake_urls() {
         let config = load_bridge_config(VALID, &env(&[])).unwrap();
         assert_eq!(config.port, 7447);
-        assert_eq!(config.routing, Routing::Star);
         assert!(config.auth.is_none());
         match &config.wake["opencode"] {
             WakeTarget::Opencode { base_url, .. } => assert_eq!(base_url, "http://127.0.0.1:14096"),
@@ -643,18 +622,6 @@ mod tests {
                 .unwrap()
                 .required
         );
-    }
-
-    #[test]
-    fn routing_defaults_to_star_and_accepts_mesh() {
-        let none = env(&[]);
-        let mesh = r#"{"port":7447,"maxMessageBytes":65536,"wake":{},"routing":"mesh"}"#;
-        assert_eq!(
-            load_bridge_config(mesh, &none).unwrap().routing,
-            Routing::Mesh
-        );
-        let bad = r#"{"port":7447,"maxMessageBytes":65536,"wake":{},"routing":"open"}"#;
-        assert!(error_text(load_bridge_config(bad, &none)).contains("routing"));
     }
 
     #[test]
