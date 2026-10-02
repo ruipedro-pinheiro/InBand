@@ -44,7 +44,7 @@ flowchart LR
 
 ## Install
 
-Linux, x86_64 or ARM64 (Raspberry Pi included).
+Linux, x86_64 or ARM64.
 
 ```sh
 git clone https://github.com/ruipedro-pinheiro/InBand

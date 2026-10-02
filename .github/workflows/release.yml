@@ -1,7 +1,7 @@
 name: Release
 
-# A tag v* builds static Linux binaries (musl), so they run on any distribution, the Raspberry Pi
-# included, and attaches them with their SHA-256 sums to the GitHub release of the tag.
+# A tag v* builds static Linux binaries (musl) for x86_64 and ARM64, so they run on any
+# distribution, and attaches them with their SHA-256 sums to the GitHub release of the tag.
 on:
   push:
     tags: ["v*"]
