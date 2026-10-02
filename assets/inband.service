@@ -1,0 +1,11 @@
+[Unit]
+Description=InBand daemon: mail between the coding agents of this user
+After=network.target
+
+[Service]
+ExecStart=@BIN@ daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,23 +1,13 @@
 # Runtime database: holds every message exchanged between agents. Never commit.
-bridge.db
-bridge.db-shm
-bridge.db-wal
 *.db
 *.db-shm
 *.db-wal
 
-# Local configuration: absolute paths and machine-specific wake targets.
-# Copy config.example.json to config.json and edit it.
+# Local configuration and secrets.
 config.json
 tokens.env
 *.env
-!.env.example
 *.bak
 
-# Local snapshots taken before refactors.
-backups/
-
-# Dependencies and build output.
-node_modules/
-dist/
-*.log
+# Build output.
+/target/

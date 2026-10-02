@@ -1,0 +1,40 @@
+[package]
+name = "inband"
+version = "2.0.0"
+edition = "2024"
+description = "Local MCP message bus for Claude Code, Codex and OpenCode sessions"
+license = "MIT"
+repository = "https://github.com/ruipedro-pinheiro/InBand"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+clap = { version = "4.6.7", features = ["derive"] }
+hex = "0.4.3"
+hmac = "0.13.0"
+humantime = "2.4.0"
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+rmcp = { version = "3.5.0", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "io-std", "time", "sync", "process", "net", "signal"] }
+toon-format = { version = "0.5.0", default-features = false }
+url = "2.5.8"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
+tower = { version = "0.5.3", features = ["util"] }
+
+[profile.release]
+strip = true

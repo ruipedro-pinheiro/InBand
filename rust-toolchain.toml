@@ -1,0 +1,4 @@
+# The CI and local builds use the same Rust, so new lints never break the build by surprise.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
