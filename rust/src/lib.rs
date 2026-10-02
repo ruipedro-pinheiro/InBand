@@ -4,6 +4,7 @@ pub mod auth;
 pub mod bridge;
 pub mod codex_session;
 pub mod config;
+pub mod daemon;
 pub mod db;
 pub mod dispatch;
 pub mod http;
