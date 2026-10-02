@@ -23,11 +23,13 @@ use crate::wake::{WakeDispatch, WakeFuture, WakeInput, WakeResult};
 
 pub const CLAUDE: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 pub const CODEX: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+pub const OPENCODE: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 pub const ADMIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 pub const CODEX_SESSION: &str = "019f6767-789c-73b2-bc5c-ac8575f29efd";
 pub const OTHER_CODEX_SESSION: &str = "019f6768-789c-73b2-bc5c-ac8575f29efd";
 pub const CLAUDE_CLIENT: (&str, &str) = ("claude", CLAUDE);
 pub const CODEX_CLIENT: (&str, &str) = ("codex", CODEX);
+pub const OPENCODE_CLIENT: (&str, &str) = ("opencode", OPENCODE);
 
 struct NoWake;
 
@@ -52,6 +54,10 @@ pub fn app() -> (Router, Arc<Bridge>) {
     let mut clients = BTreeMap::new();
     clients.insert("claude".to_owned(), client(CLAUDE, &["claude-*"], false));
     clients.insert("codex".to_owned(), client(CODEX, &["codex-*"], false));
+    clients.insert(
+        "opencode".to_owned(),
+        client(OPENCODE, &["opencode", "opencode-*"], false),
+    );
     clients.insert("admin".to_owned(), client(ADMIN, &["*"], true));
     let auth_config = AuthConfig {
         required: true,
@@ -155,4 +161,20 @@ pub async fn start_claude(app: &Router, mailbox: &str, session: &str) -> (Status
         signed("GET", &path, None, CLAUDE_CLIENT, Some(session)),
     )
     .await
+}
+
+/// The full app served on a loopback port, for the client side: its base URL and its bridge.
+pub async fn serve() -> (String, Arc<Bridge>) {
+    let (app, bridge) = app();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
+        listener, app,
+    )));
+    (base, bridge)
+}
+
+/// A client of the served app.
+pub fn daemon_client(base: &str, (client_id, token): (&str, &str)) -> crate::client::Client {
+    crate::client::Client::new(base, client_id, Some(token.to_owned())).unwrap()
 }

@@ -330,6 +330,13 @@ impl ServerHandler for InbandMcp {
     }
 }
 
+/// The tools of the daemon, as `tools/list` returns them. The shim and the `OpenCode` plugin take
+/// them from here, so they know the tools even while the daemon is down.
+#[must_use]
+pub fn tool_list() -> Vec<rmcp::model::Tool> {
+    InbandMcp::tool_router().list_all()
+}
+
 /// The MCP endpoint. It holds no MCP sessions, like the v1 daemon, and refuses browser origins;
 /// the HTTP layer authenticates every request before it reaches this service.
 pub fn service(
