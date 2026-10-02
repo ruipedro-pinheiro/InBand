@@ -21,16 +21,22 @@ pub struct InvalidSessionId(pub String);
 /// Returns an error for an empty id, an id longer than 128 chars, or chars other than ASCII
 /// letters, digits, `_` and `-`.
 pub fn mailbox(session_id: &str) -> Result<String, InvalidSessionId> {
-    let valid = !session_id.is_empty()
-        && session_id.len() <= MAX_SESSION_ID
-        && session_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    if !valid {
+    if !is_valid_session_id(session_id) {
         return Err(InvalidSessionId(session_id.to_owned()));
     }
     let digest = hex::encode(Sha256::digest(session_id.as_bytes()));
     Ok(format!("{OPENCODE_FAMILY}-{}", &digest[..DIGEST_CHARS]))
+}
+
+/// True for 1 to 128 ASCII letters, digits, `_` and `-`. Such an id is safe as one URL path segment:
+/// it holds no `/`, and it can never be `.` or `..`.
+#[must_use]
+pub fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= MAX_SESSION_ID
+        && session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// True for an `opencode-<16 hex chars>` mailbox.

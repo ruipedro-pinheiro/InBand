@@ -1479,7 +1479,14 @@ impl Bridge {
 
     fn maybe_wake(self: &Arc<Self>, recipient: &str) -> String {
         let is_codex = codex_session::is_canonical_mailbox(recipient);
-        let key = if is_codex { CODEX_FAMILY } else { recipient };
+        let is_opencode_session = opencode_session::is_session_mailbox(recipient);
+        let key = if is_codex {
+            CODEX_FAMILY
+        } else if is_opencode_session {
+            opencode_session::OPENCODE_FAMILY
+        } else {
+            recipient
+        };
         let Some(target) = self.config.wake.get(key).cloned() else {
             return "no-wake-configured".to_owned();
         };
@@ -1522,13 +1529,26 @@ impl Bridge {
             }
             return "wake-dispatched".to_owned();
         }
+        // An OpenCode session mailbox wakes its own session. The fixed `opencode` mailbox of v1
+        // clients wakes the most recent session.
+        let session_id = if is_opencode_session {
+            match Self::bound_session(&lock(&self.db), recipient) {
+                Ok(Some(session)) => Some(session),
+                Ok(None) => {
+                    return "wake-failed: no OpenCode session is bound to this mailbox".to_owned();
+                }
+                Err(error) => return format!("wake-failed: {error}"),
+            }
+        } else {
+            None
+        };
         let bridge = Arc::clone(self);
         let mailbox = recipient.to_owned();
         tokio::spawn(async move {
             let input = WakeInput {
                 recipient: mailbox.clone(),
-                session_id: None,
-                mailbox: None,
+                session_id,
+                mailbox: Some(mailbox.clone()),
                 prompt: target.common().prompt.clone(),
             };
             let result = bridge.wake.dispatch(&target, input).await;

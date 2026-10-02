@@ -1206,6 +1206,46 @@ async fn startup_reconciliation_wakes_only_sessions_with_unread_mail() {
     );
 }
 
+#[tokio::test]
+async fn an_opencode_session_mailbox_wakes_its_own_session() {
+    let fake = FakeWake::script(&[WakeDisposition::Started]);
+    let mut wake = BTreeMap::new();
+    wake.insert(
+        "opencode".to_owned(),
+        WakeTarget::Opencode {
+            base_url: "http://127.0.0.1:14096".to_owned(),
+            common: WakeCommon {
+                prompt: "mail for {mailbox}".to_owned(),
+                debounce_seconds: 30,
+                max_wakes_per_hour: 20,
+            },
+        },
+    );
+    let bridge = bridge_with(wake, Arc::clone(&fake));
+    let (a, b) = (opencode(OPENCODE_A), opencode(OPENCODE_B));
+    team(&bridge, "x", "claude-a-0001", &[&a]);
+    let sent = bridge
+        .send(&me("claude-a-0001"), "claude-a-0001", &a, "task")
+        .unwrap();
+    assert_eq!(sent.notify[&a], "wake-dispatched");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].session_id.as_deref(), Some(OPENCODE_A));
+    assert_eq!(calls[0].mailbox.as_deref(), Some(a.as_str()));
+
+    // A member that no session bound has no session to wake.
+    bridge.join(&admin(), &b, "x").unwrap();
+    let unbound = bridge
+        .send(&me("claude-a-0001"), "claude-a-0001", &b, "task")
+        .unwrap();
+    assert!(
+        unbound.notify[&b].starts_with("wake-failed"),
+        "{:?}",
+        unbound.notify
+    );
+}
+
 #[test]
 fn no_wake_for_unconfigured_or_mismatched_targets() {
     let bridge = bus();
