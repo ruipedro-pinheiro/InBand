@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS audit (
   outcome TEXT NOT NULL,
   reason TEXT
 );
+CREATE TABLE IF NOT EXISTS members (
+  mailbox TEXT PRIMARY KEY,
+  team TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('lead', 'worker')),
+  joined_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_members_one_lead
+  ON members(team) WHERE role = 'lead';
 ";
 
 /// The current time in the ISO 8601 format of the v1 daemon, for example `2026-10-01T22:07:59.392Z`.
@@ -182,12 +190,12 @@ mod tests {
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
-                 ('messages','deliveries','agents','wakes','codex_sessions','settings','sessions','audit')",
+                 ('messages','deliveries','agents','wakes','codex_sessions','settings','sessions','audit','members')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 8);
+        assert_eq!(tables, 9);
         drop(connection);
         fs::remove_dir_all(dir).unwrap();
     }
