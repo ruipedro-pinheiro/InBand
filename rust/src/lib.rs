@@ -7,8 +7,11 @@ pub mod config;
 pub mod db;
 pub mod dispatch;
 pub mod http;
+pub mod mcp;
 pub mod opencode_session;
 pub mod protocol;
 pub mod sanitize;
+#[cfg(test)]
+pub mod test_support;
 pub mod tokens;
 pub mod wake;

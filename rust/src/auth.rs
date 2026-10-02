@@ -388,7 +388,8 @@ impl<'a> SignedRequest<'a> {
 
 /// Session ids of Claude Code and Codex (UUIDs) and OpenCode (`ses_…`): no char can end a line of
 /// the signed payload.
-fn is_valid_session(session: &str) -> bool {
+#[must_use]
+pub fn is_valid_session(session: &str) -> bool {
     (1..=128).contains(&session.len())
         && session
             .bytes()
