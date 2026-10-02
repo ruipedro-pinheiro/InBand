@@ -120,13 +120,10 @@ pub struct AgentStatus {
     pub name: String,
     pub first_seen: String,
     pub last_seen: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Every agent carries every field, null when empty: uniform rows let ping use a TOON table.
     pub display_label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
     pub role: &'static str,
     pub connected: String,

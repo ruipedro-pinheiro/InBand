@@ -47,10 +47,23 @@ async fn run(app: &Router, request: HttpRequest<Body>) -> (bool, Value) {
         .unwrap_or_else(|| panic!("no response in {body}"));
     let result = &reply["result"];
     let text = result["content"][0]["text"].as_str().unwrap_or("null");
-    (
-        result["isError"].as_bool().unwrap_or(false),
-        serde_json::from_str(text).unwrap_or(Value::Null),
-    )
+    let value = serde_json::from_str(text)
+        .or_else(|_| toon_format::decode_default::<Value>(text))
+        .unwrap_or(Value::Null);
+    (result["isError"].as_bool().unwrap_or(false), value)
+}
+
+/// The raw text of a tool result.
+async fn run_text(app: &Router, request: HttpRequest<Body>) -> String {
+    let (_, body) = call_raw(app, with_protocol(request)).await;
+    let reply = messages(&body)
+        .into_iter()
+        .find(|message| message.get("id").is_some())
+        .unwrap();
+    reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 fn codex_mailbox(session: &str) -> String {
@@ -279,6 +292,18 @@ async fn a_signed_session_reads_only_its_own_mail() {
     assert!(!is_error, "{mail}");
     assert_eq!(mail["messages"][0]["content"], "run the tests");
     assert_eq!(mail["messages"][0]["sender_role"], "lead");
+    // Messages stay compact JSON: every message names its sender with a key.
+    let text = run_text(
+        &app,
+        bearer(
+            "POST",
+            "/mcp",
+            CODEX,
+            Some(&tool_call("get_messages", &read, Some(&meta))),
+        ),
+    )
+    .await;
+    assert!(text.starts_with('{') && !text.contains("\n  "), "{text}");
 }
 
 #[tokio::test]
@@ -300,6 +325,19 @@ async fn ping_and_clear_follow_the_caller() {
     assert!(!is_error, "{status}");
     assert_eq!(status["team"], "x");
     assert_eq!(status["agents"].as_array().unwrap().len(), 2);
+    // Uniform agent rows give a TOON table: one header, one line per agent.
+    let text = run_text(
+        &app,
+        signed(
+            "POST",
+            "/mcp",
+            Some(&tool_call("ping", &ping, None)),
+            CLAUDE_CLIENT,
+            Some("sess-lead"),
+        ),
+    )
+    .await;
+    assert!(text.contains("agents[2]{"), "{text}");
 
     let wipe = json!({"confirm": "wipe"});
     let (is_error, _) = run(

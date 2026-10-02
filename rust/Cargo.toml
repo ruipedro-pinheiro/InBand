@@ -29,6 +29,7 @@ sha2 = "0.11.0"
 subtle = "2.6.1"
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "io-std", "time", "sync", "process", "net", "signal"] }
+toon-format = { version = "0.5.0", default-features = false }
 url = "2.5.8"
 
 [dev-dependencies]

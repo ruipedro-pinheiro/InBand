@@ -105,9 +105,23 @@ pub struct InbandMcp {
     bridge: Arc<Bridge>,
 }
 
+/// Compact JSON: indentation costs about a quarter more tokens and helps no model.
 fn ok_json(value: &impl Serialize) -> CallToolResult {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned());
+    let text = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned());
     CallToolResult::success(vec![ContentBlock::text(text)])
+}
+
+/// TOON, for status tables: the uniform agent rows become one header and one line per agent,
+/// about a fifth fewer tokens than compact JSON. Messages stay JSON, so that every message names
+/// its sender with a key instead of a column position.
+fn ok_toon(value: &impl Serialize) -> CallToolResult {
+    match serde_json::to_value(value)
+        .ok()
+        .and_then(|value| toon_format::encode_default(&value).ok())
+    {
+        Some(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+        None => ok_json(value),
+    }
 }
 
 fn failure(message: impl Display) -> CallToolResult {
@@ -272,7 +286,8 @@ nothing and nobody waits for you, end your turn: a new message wakes you."
     }
 
     #[tool(
-        description = "Your team: the lead, the members, their presence, roles and unread counts, and recent wakes."
+        description = "Your team: the lead, the members, their presence, roles and unread counts, and recent wakes. \
+The result is TOON: `agents[N]{fields}:` names the columns, then one line per agent."
     )]
     async fn ping(
         &self,
@@ -280,7 +295,10 @@ nothing and nobody waits for you, end your turn: a new message wakes you."
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let caller = caller(&context)?;
-        Ok(reply(self.bridge.status(&caller, Some(&args.from))))
+        Ok(match self.bridge.status(&caller, Some(&args.from)) {
+            Ok(status) => ok_toon(&status),
+            Err(error) => failure(error),
+        })
     }
 
     #[tool(description = "Delete all messages. Admin token only, with confirm=\"wipe\".")]
