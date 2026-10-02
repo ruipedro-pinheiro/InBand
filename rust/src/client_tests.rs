@@ -76,3 +76,13 @@ fn only_loopback_daemons_unless_unsafe() {
         Err(ClientError::Url(_))
     ));
 }
+
+#[test]
+fn the_local_daemon_port_comes_from_the_installed_config() {
+    let dir = std::env::temp_dir().join(format!("inband-client-port-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env: EnvMap = [("INBAND_HOME".to_owned(), dir.display().to_string())].into();
+    assert_eq!(local_daemon_url(&env), "http://127.0.0.1:7447");
+    std::fs::write(dir.join("config.json"), r#"{"port": 17999}"#).unwrap();
+    assert_eq!(local_daemon_url(&env), "http://127.0.0.1:17999");
+}

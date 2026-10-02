@@ -36,6 +36,20 @@ pub struct Client {
     http: reqwest::Client,
 }
 
+/// The daemon of this machine: the port of the installed `config.json`, else 7447. A machine
+/// that only runs agents has no `config.json` and reaches the daemon through a forwarded 7447.
+fn local_daemon_url(env: &EnvMap) -> String {
+    crate::daemon::default_directory(env)
+        .and_then(|dir| std::fs::read_to_string(dir.join("config.json")).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|config| config["port"].as_u64())
+        .filter(|port| (1..=65_535).contains(port))
+        .map_or_else(
+            || DEFAULT_URL.to_owned(),
+            |port| format!("http://127.0.0.1:{port}"),
+        )
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -55,10 +69,10 @@ impl Client {
         load_token_env_file(&mut env).map_err(|error| ClientError::Tokens(error.to_string()))?;
         let raw = env
             .get("INBAND_URL")
-            .map(|url| url.trim())
+            .map(|url| url.trim().to_owned())
             .filter(|url| !url.is_empty())
-            .unwrap_or(DEFAULT_URL);
-        let base = normalize_loopback_http_base_url(raw, &env)
+            .unwrap_or_else(|| local_daemon_url(&env));
+        let base = normalize_loopback_http_base_url(&raw, &env)
             .map_err(|error| ClientError::Url(error.to_string()))?;
         let client_id = env
             .get("INBAND_CLIENT_ID")

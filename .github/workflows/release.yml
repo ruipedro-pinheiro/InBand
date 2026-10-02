@@ -1,0 +1,70 @@
+name: Release
+
+# A tag v* builds static Linux binaries (musl), so they run on any distribution, the Raspberry Pi
+# included, and attaches them with their SHA-256 sums to the GitHub release of the tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the toolchain and musl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.arch }}-unknown-linux-musl
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target ${{ matrix.arch }}-unknown-linux-musl
+          bin=target/${{ matrix.arch }}-unknown-linux-musl/release/inband
+          "$bin" --version
+          tar -czf inband-${{ matrix.arch }}-linux.tar.gz -C "$(dirname "$bin")" inband
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inband-${{ matrix.arch }}
+          path: rust/inband-${{ matrix.arch }}-linux.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum inband-*-linux.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          gh release upload "$TAG" inband-*-linux.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber

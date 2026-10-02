@@ -10,6 +10,7 @@ pub mod db;
 pub mod dispatch;
 pub mod hooks;
 pub mod http;
+pub mod install;
 pub mod mcp;
 pub mod opencode_cli;
 pub mod opencode_session;

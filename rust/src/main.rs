@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use inband::client::Client;
 use inband::config::EnvMap;
 use inband::hooks::{self, MailcheckState};
+use inband::install;
 use inband::opencode_cli;
 use serde_json::Value;
 
@@ -49,6 +50,16 @@ enum Command {
     },
     /// Run the stdio MCP server of a Claude Code session.
     Shim,
+    /// Install the daemon and connect the agent clients of this machine. Safe to run again.
+    Install {
+        #[arg(
+            long,
+            help = "This machine runs agents only: the daemon runs on another machine"
+        )]
+        client: bool,
+        #[arg(long, help = "Do not install the systemd user service")]
+        no_service: bool,
+    },
     /// What the OpenCode plugin runs, for one session.
     Opencode {
         #[arg(long, help = "The OpenCode sessionID")]
@@ -149,6 +160,71 @@ async fn opencode(session: Option<&str>, action: OpencodeAction) -> Result<ExitC
     })
 }
 
+async fn install(client: bool, no_service: bool) -> Result<(), String> {
+    let env = env();
+    let home = env
+        .get("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .ok_or("no home directory: set HOME")?;
+    let source_binary =
+        std::env::current_exe().map_err(|error| format!("cannot find this binary: {error}"))?;
+    let options = install::InstallOptions {
+        home,
+        source_binary,
+        client_only: client,
+        service: !no_service,
+        env: env.clone(),
+    };
+    let runner = install::SystemRunner {
+        path: env.get("PATH").cloned(),
+    };
+    let report = install::install(&options, &runner).map_err(|error| error.to_string())?;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    if report.port.is_some() && !no_service {
+        println!("\n== Health check");
+        println!("  {}", health(&report.binary).await);
+    }
+    if !report.todo.is_empty() {
+        println!("\n== Still to do");
+        for item in &report.todo {
+            println!("  - {item}");
+        }
+    }
+    println!("\nRestart your agents so they load InBand.");
+    Ok(())
+}
+
+/// Asks the new daemon for its health, for a few seconds.
+async fn health(binary: &std::path::Path) -> String {
+    let daemon = match Client::from_env("admin", env()) {
+        Ok(daemon) => daemon,
+        Err(error) => return format!("cannot check: {error}"),
+    };
+    for _ in 0..10 {
+        if let Ok(reply) = daemon
+            .request(
+                reqwest::Method::GET,
+                "/health",
+                None,
+                None,
+                std::time::Duration::from_secs(2),
+            )
+            .await
+            && reply["ok"] == true
+        {
+            return "the daemon answers".to_owned();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    format!(
+        "the daemon does not answer. Look at: journalctl --user -u inband -n 30, or run {} daemon",
+        binary.display()
+    )
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -167,6 +243,9 @@ fn main() -> ExitCode {
             .map(|()| ExitCode::SUCCESS)
             .map_err(|error| error.to_string()),
         Command::Hook { client } => runtime.block_on(hook(client)).map(|()| ExitCode::SUCCESS),
+        Command::Install { client, no_service } => runtime
+            .block_on(install(client, no_service))
+            .map(|()| ExitCode::SUCCESS),
         Command::Shim => runtime
             .block_on(inband::shim::run())
             .map(|()| ExitCode::SUCCESS),
