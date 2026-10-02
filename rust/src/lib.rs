@@ -6,6 +6,7 @@ pub mod codex_session;
 pub mod config;
 pub mod db;
 pub mod dispatch;
+pub mod http;
 pub mod opencode_session;
 pub mod protocol;
 pub mod sanitize;

@@ -712,6 +712,7 @@ dependencies = [
  "subtle",
  "thiserror",
  "tokio",
+ "tower",
  "url",
 ]
 

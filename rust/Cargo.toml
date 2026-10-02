@@ -31,3 +31,4 @@ url = "2.5.8"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
+tower = { version = "0.5.3", features = ["util"] }

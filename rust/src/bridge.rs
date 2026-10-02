@@ -174,6 +174,28 @@ pub struct TeamChange {
     pub replaced_lead: Option<String>,
 }
 
+/// Where a mailbox stands: the input of the protocol text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionContext {
+    pub mailbox: String,
+    pub role: Role,
+    pub team: Option<String>,
+    pub lead: Option<String>,
+}
+
+impl SessionContext {
+    /// The protocol text for this mailbox.
+    #[must_use]
+    pub fn protocol(&self) -> String {
+        crate::protocol::protocol_text(
+            self.role,
+            &self.mailbox,
+            self.team.as_deref(),
+            self.lead.as_deref(),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Delivery {
     id: i64,
@@ -990,6 +1012,36 @@ impl Bridge {
 
     fn unread_of(&self, recipient: &str) -> Result<Vec<MessageRow>, BridgeError> {
         Ok(message_rows(&lock(&self.db), UNREAD_SQL, [recipient])?)
+    }
+
+    /// The role, team and lead of a mailbox, for the protocol text of its own hooks.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    pub fn session_context(
+        &self,
+        caller: &Caller,
+        mailbox_raw: &str,
+    ) -> Result<SessionContext, BridgeError> {
+        let mailbox = self.acting_mailbox(caller, mailbox_raw, "agent")?;
+        let db = lock(&self.db);
+        let membership = Self::membership_of(&db, &mailbox)?;
+        let lead = match &membership {
+            Some((team, _)) => Self::lead_of_team(&db, team)?,
+            None => None,
+        };
+        let (team, role) = membership.map_or((None, Role::Solo), |(team, role)| (Some(team), role));
+        Ok(SessionContext {
+            mailbox,
+            role,
+            team,
+            lead,
+        })
+    }
+
+    #[must_use]
+    pub fn started_at(&self) -> &str {
+        &self.started_at
     }
 
     /// Unread mail without marking it read.
