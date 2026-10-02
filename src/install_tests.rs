@@ -149,7 +149,17 @@ fn a_fresh_install_sets_up_the_daemon_and_every_client() {
         binary.display()
     );
     assert!(calls.contains(&shim), "{calls:#?}");
-    assert!(calls.contains(&"/usr/bin/codex mcp add inband --url http://127.0.0.1:7447/mcp --bearer-token-env-var INBAND_CODEX_TOKEN".to_owned()));
+    assert!(calls.contains(&format!(
+        "/usr/bin/codex mcp add inband -- {} shim --codex",
+        binary.display()
+    )));
+    assert!(
+        !report
+            .todo
+            .iter()
+            .any(|item| item.contains("INBAND_CODEX_TOKEN")),
+        "Codex needs no token in its environment"
+    );
     assert!(calls.contains(&"/usr/bin/systemctl --user restart inband".to_owned()));
 }
 
@@ -386,4 +396,29 @@ fn an_opencode_config_with_comments_is_left_to_the_user() {
             .iter()
             .any(|item| item.contains("opencode.jsonc"))
     );
+}
+
+#[test]
+fn codex_calls_the_inband_tools_without_approval_prompts() {
+    let home = home("approve");
+    let config = home.join(".codex/config.toml");
+    write(
+        &config,
+        "model = \"o4\"\n\n[mcp_servers.inband]\ncommand = \"/b/inband\"\nargs = [\"shim\", \"--codex\"]\n\n[mcp_servers.other]\ncommand = \"x\"\n",
+    );
+    let mut report = Report::default();
+    approve_codex_tools(&config, &mut report).unwrap();
+    approve_codex_tools(&config, &mut report).unwrap();
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(
+        text.matches("default_tools_approval_mode").count(),
+        1,
+        "{text}"
+    );
+    let inband = text.split("[mcp_servers.other]").next().unwrap();
+    assert!(
+        inband.contains("[mcp_servers.inband]\ndefault_tools_approval_mode = \"approve\""),
+        "{text}"
+    );
+    assert!(text.ends_with("[mcp_servers.other]\ncommand = \"x\"\n"));
 }

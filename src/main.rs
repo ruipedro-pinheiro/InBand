@@ -48,8 +48,11 @@ enum Command {
         #[arg(value_enum)]
         client: HookClient,
     },
-    /// Run the stdio MCP server of a Claude Code session.
-    Shim,
+    /// Run the stdio MCP server of a Claude Code session, or of a Codex process.
+    Shim {
+        #[arg(long, help = "Serve Codex: each tool call names its session")]
+        codex: bool,
+    },
     /// Install the daemon and connect the agent clients of this machine. Safe to run again.
     Install {
         #[arg(
@@ -246,8 +249,8 @@ fn main() -> ExitCode {
         Command::Install { client, no_service } => runtime
             .block_on(install(client, no_service))
             .map(|()| ExitCode::SUCCESS),
-        Command::Shim => runtime
-            .block_on(inband::shim::run())
+        Command::Shim { codex } => runtime
+            .block_on(inband::shim::run(codex))
             .map(|()| ExitCode::SUCCESS),
         Command::Opencode { session, action } => {
             runtime.block_on(opencode(session.as_deref(), action))

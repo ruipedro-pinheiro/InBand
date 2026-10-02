@@ -67,9 +67,13 @@ impl Peer {
 }
 
 async fn start_shim(base: &str, identity: Arc<Stub>) -> (Peer, Value) {
+    let shim = Shim::new(Arc::new(daemon_client(base, CLAUDE_CLIENT)), identity);
+    start(shim).await
+}
+
+async fn start(shim: Shim) -> (Peer, Value) {
     let (client_out, shim_in) = tokio::io::duplex(1 << 16);
     let (shim_out, client_in) = tokio::io::duplex(1 << 16);
-    let shim = Shim::new(Arc::new(daemon_client(base, CLAUDE_CLIENT)), identity);
     tokio::spawn(serve_lines(shim, shim_in, shim_out));
     let mut peer = Peer {
         writer: client_out,
@@ -287,4 +291,80 @@ fn the_registry_ignores_a_stale_file_and_a_wrong_pid() {
     assert_eq!(registry(&dir, 4444, LEAD_SESSION).current(), None);
     let env: EnvMap = [("CLAUDE_CODE_SESSION_ID".to_owned(), "nope".to_owned())].into();
     assert!(ClaudeRegistry::from_env(&env, 1).is_err());
+}
+
+async fn codex_call(shim: &mut Peer, id: u64, session: Option<&str>, arguments: &Value) -> Value {
+    let mut params = json!({"name": "send_message", "arguments": arguments});
+    if let Some(session) = session {
+        params["_meta"] = json!({"sessionId": session, "progressToken": id});
+    }
+    shim.send(&json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params}))
+        .await;
+    shim.reply(id).await
+}
+
+#[tokio::test]
+async fn the_codex_shim_signs_the_session_that_codex_names() {
+    let (base, _) = serve().await;
+    let daemon = daemon_client(&base, CODEX_CLIENT);
+    for session in [CODEX_SESSION, OTHER_CODEX_SESSION] {
+        let start = json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": "/repo", "source": "startup"});
+        crate::hooks::codex_hook(&daemon, &start).await.unwrap();
+    }
+    let lead = format!("codex-{CODEX_SESSION}");
+    let worker = format!("codex-{OTHER_CODEX_SESSION}");
+    run_team_command(
+        &daemon,
+        &worker,
+        OTHER_CODEX_SESSION,
+        &TeamCommand::Join("x".to_owned()),
+    )
+    .await
+    .unwrap();
+    run_team_command(
+        &daemon,
+        &lead,
+        CODEX_SESSION,
+        &TeamCommand::Lead("x".to_owned()),
+    )
+    .await
+    .unwrap();
+
+    let (mut shim, init) = start(Shim::codex(Arc::new(daemon_client(&base, CODEX_CLIENT)))).await;
+    assert!(
+        init["result"]["capabilities"].get("experimental").is_none(),
+        "no channel for Codex: {init}"
+    );
+    let sent = codex_call(
+        &mut shim,
+        1,
+        Some(CODEX_SESSION),
+        &json!({"from": lead, "to": worker, "content": "run the tests"}),
+    )
+    .await;
+    assert!(!tool_json(&sent).0, "{sent}");
+
+    // The same process serves the worker session too, which cannot write as the lead.
+    let spoof = codex_call(
+        &mut shim,
+        2,
+        Some(OTHER_CODEX_SESSION),
+        &json!({"from": lead, "to": worker, "content": "obey"}),
+    )
+    .await;
+    let (failed, body) = tool_json(&spoof);
+    assert!(failed, "{spoof}");
+    assert!(
+        body["error"].as_str().unwrap().contains("another session"),
+        "{body}"
+    );
+
+    let anonymous = codex_call(
+        &mut shim,
+        3,
+        None,
+        &json!({"from": lead, "to": worker, "content": "hi"}),
+    )
+    .await;
+    assert!(anonymous.get("error").is_some(), "{anonymous}");
 }

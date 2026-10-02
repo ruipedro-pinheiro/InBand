@@ -157,19 +157,16 @@ pub fn install(options: &InstallOptions, runner: &dyn Runner) -> Result<Report, 
     report.say(format!("{}", binary.display()));
     report.binary.clone_from(&binary);
 
-    let port = if options.client_only {
+    if options.client_only {
         report.step("Checking tokens.env");
         check_client_tokens(&data)?;
         report.say("tokens.env found, no token generated");
-        DEFAULT_PORT
     } else {
         report.step("Writing tokens.env");
         write_tokens(&data, &mut report)?;
         report.step("Writing config.json");
-        let port = write_config(&data, runner, &options.env, &mut report)?;
-        report.port = Some(port);
-        port
-    };
+        report.port = Some(write_config(&data, runner, &options.env, &mut report)?);
+    }
 
     let config_home = options
         .env
@@ -195,7 +192,7 @@ pub fn install(options: &InstallOptions, runner: &dyn Runner) -> Result<Report, 
         .filter(|dir| !dir.is_empty())
         .map_or_else(|| home.join(".codex"), PathBuf::from);
     if client_present(&codex_dir, "codex", runner) {
-        install_codex(&codex_dir, &binary, port, runner, &mut report)?;
+        install_codex(&codex_dir, &binary, runner, &mut report)?;
     } else {
         report.say("not found, skipped");
     }
@@ -629,7 +626,6 @@ fn is_codex_hook(command: &str) -> bool {
 fn install_codex(
     dir: &Path,
     binary: &Path,
-    port: u64,
     runner: &dyn Runner,
     report: &mut Report,
 ) -> Result<(), InstallError> {
@@ -662,21 +658,25 @@ fn install_codex(
     remove_v1(&dir.join("prompts/lead.md"), report)?;
     report.say("skills $lead, $join and $solo installed");
 
-    let url = format!("http://127.0.0.1:{port}/mcp");
+    // A stdio server: the shim reads the token file itself, so Codex needs no token in its
+    // environment, and it signs the session that Codex names in each tool call.
+    let shim = binary.display().to_string();
     let add = [
         "mcp",
         "add",
         "inband",
-        "--url",
-        url.as_str(),
-        "--bearer-token-env-var",
-        "INBAND_CODEX_TOKEN",
+        "--",
+        shim.as_str(),
+        "shim",
+        "--codex",
     ];
     if let Some(codex) = runner.find("codex") {
+        // v1 used an HTTP server with a bearer token in the environment.
         runner.run(&codex, &["mcp", "remove", "inband"]);
         let (ok, output) = runner.run(&codex, &add);
         if ok {
-            report.say(format!("MCP server inband added: {url}"));
+            report.say("MCP server inband added: the shim");
+            approve_codex_tools(&dir.join("config.toml"), report)?;
         } else {
             report.say(format!("codex mcp add failed: {}", output.trim()));
             report.todo.push(format!("Run: codex {}", add.join(" ")));
@@ -684,10 +684,37 @@ fn install_codex(
     } else {
         report.todo.push(format!("Run: codex {}", add.join(" ")));
     }
-    report.todo.push(
-        "Codex reads its token from INBAND_CODEX_TOKEN: export it in the shell that starts Codex, for example with: set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a"
-            .to_owned(),
-    );
+    Ok(())
+}
+
+/// Lets Codex call the InBand tools without asking. A Codex session that a wake starts in the
+/// background has nobody to ask, and would never read its mail. The daemon checks the session of
+/// every call, whatever the approval.
+fn approve_codex_tools(path: &Path, report: &mut Report) -> Result<(), InstallError> {
+    const TABLE: &str = "[mcp_servers.inband]";
+    const APPROVE: &str = "default_tools_approval_mode = \"approve\"";
+    let Some(text) = read_optional(path)? else {
+        return Ok(());
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|line| line.trim() == TABLE) else {
+        return Ok(());
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.trim_start().starts_with('['))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    if lines[start + 1..end]
+        .iter()
+        .any(|line| line.trim_start().starts_with("default_tools_approval_mode"))
+    {
+        return Ok(());
+    }
+    lines.insert(start + 1, APPROVE);
+    let mut updated = lines.join("\n");
+    updated.push('\n');
+    write_file(path, &updated, None)?;
+    report.say("the InBand tools run without approval prompts");
     Ok(())
 }
 

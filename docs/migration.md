@@ -15,6 +15,7 @@ Move every machine of one setup at once.
 | `/prompts:lead` in Codex                   | `$lead x`, `$join x`, `$solo`                        |
 | `claim_lead` tool                          | Removed: only the user changes teams                 |
 | Claude Code: HTTP server + `inband-channel` | One `inband` MCP server: the shim                   |
+| Codex: HTTP server, token exported in the shell | The shim; no token in the environment          |
 | `--dangerously-load-development-channels server:inband-channel` | `... server:inband` |
 | Bun, `python3`, `curl`                     | Nothing: one static binary                           |
 
@@ -51,7 +52,7 @@ machines.
    `journalctl --user -u inband -n 30`.
 5. Start the agents again, with the new flags:
    - Claude Code: `claude --dangerously-load-development-channels server:inband`
-   - Codex: from a shell that exports `INBAND_CODEX_TOKEN`; trust the new hooks
+   - Codex: as usual; trust the new hooks when it asks
    - OpenCode: `opencode --port 14096`
 6. Form the teams: `/lead x` in the lead session, `/join x` in each worker
    (`$lead x` and `$join x` in Codex).

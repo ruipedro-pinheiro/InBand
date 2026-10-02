@@ -22,6 +22,7 @@
 | `inband hook claude`      | The Claude Code hooks                    |
 | `inband hook codex`       | The Codex hooks                          |
 | `inband shim`             | Claude Code, as its `inband` MCP server  |
+| `inband shim --codex`     | Codex, as its `inband` MCP server        |
 | `inband opencode ...`     | The OpenCode plugin                      |
 
 ## Installer
@@ -40,7 +41,7 @@ exists. Per client, the installer writes:
 | Client      | Hooks                                                      | Tools                                  | Team commands                          |
 | ----------- | ---------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
 | Claude Code | SessionStart, UserPromptSubmit, PostToolUse, SessionEnd in `settings.json` | `claude mcp add --scope user inband -- inband shim` | `~/.claude/commands/{lead,join,solo}.md` |
-| Codex       | SessionStart, UserPromptSubmit, Stop in `hooks.json`       | `codex mcp add inband --url .../mcp`   | `~/.codex/skills/{lead,join,solo}/`    |
+| Codex       | SessionStart, UserPromptSubmit, Stop in `hooks.json`       | `codex mcp add inband -- inband shim --codex`, without approval prompts | `~/.codex/skills/{lead,join,solo}/`    |
 | OpenCode    | none: the plugin                                           | `~/.config/opencode/plugin/inband.js`  | `~/.config/opencode/command/{lead,join,solo}.md` |
 
 What it keeps:
@@ -186,13 +187,12 @@ only on the loopback interface of the client.
 | `CLAUDE_CONFIG_DIR`          | Installer, shim  | Claude Code configuration directory. Default `~/.claude`     |
 | `CODEX_HOME`                 | Installer        | Codex configuration directory. Default `~/.codex`            |
 
-`tokens.env` contains `NAME=value` lines without `export`. Codex reads its MCP
-token from its environment, so export it in the shell that starts `codex`:
+Every InBand command reads its token from `tokens.env` itself: no agent needs
+a token in its environment.
 
-```sh
-set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a
-codex
-```
+The InBand tools run in Codex without approval prompts: a session that a wake
+starts in the background has nobody to approve its calls. The daemon checks
+the session of every call, whatever the approval.
 
 ## HTTP endpoints
 
@@ -218,8 +218,9 @@ act as another agent, the lead above all.
 
 - **The daemon knows which session calls.** The hooks, the shim and the
   OpenCode plugin sign each request with HMAC-SHA256, a timestamp, a nonce and
-  the session. Codex puts its session in the `_meta` of each MCP call itself.
-  The model writes only the tool arguments, so it cannot change either.
+  the session. For Codex, the shim signs the session that Codex itself writes
+  in the `_meta` of each MCP call. The model writes only the tool arguments, so
+  it cannot change the session.
 - **A mailbox belongs to one session.** Codex and OpenCode mailboxes carry
   their session in their name. A Claude Code mailbox is bound to its session
   at SessionStart. A request for a mailbox of another session is refused,

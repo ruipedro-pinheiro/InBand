@@ -24,7 +24,7 @@ flowchart LR
     user([User]) --- lead["Claude Code<br/>lead"]
     lead <-->|shim| daemon[("InBand<br/>daemon + SQLite")]
     daemon <-->|shim + channel| w1["Claude Code<br/>worker"]
-    daemon <-->|MCP + codex queue| w2["Codex<br/>worker"]
+    daemon <-->|shim + codex queue| w2["Codex<br/>worker"]
     daemon <-->|plugin + prompt_async| w3["OpenCode<br/>worker"]
 ```
 
@@ -67,9 +67,7 @@ It is safe to run again, and it migrates a v1 install. Then:
 - **Claude Code**: start it with
   `--dangerously-load-development-channels server:inband` to get mail as it
   arrives.
-- **Codex**: start it from a shell that exports its token, and trust the
-  InBand hooks when it asks:
-  `set -a; . ~/.local/share/mcp-servers/inband/tokens.env; set +a; codex`
+- **Codex**: trust the InBand hooks when it asks.
 - **OpenCode**: start it with `--port 14096` so the daemon can wake it.
 
 Agents on another machine than the daemon: `./install.sh --client`, see
