@@ -1,13 +1,14 @@
-//! @file auth.rs
-//! @brief Authentication of requests, and authorization of mailboxes.
+//! Authentication of requests, and authorization of mailboxes.
 //!
-//! @details A request proves its client in one of two ways:
+//! A request proves its client in one of two ways:
+//!
 //! - a bearer token: `Authorization: Bearer <token>`;
-//! - an HMAC signature: the hooks, the shims and the `OpenCode` plugin sign each request with the token of their client.
+//! - an HMAC signature, made with the token of the client: the hooks, the shims and the `OpenCode`
+//!   plugin sign each request.
 //!
-//! A signed request can also name the session that it acts for.
-//! The signature includes the session, so nobody can change the session without the token.
-//! Each client can use only the mailboxes that match its patterns, for example `claude-*`.
+//! A signed request can also name the session that it acts for. The signature covers the session,
+//! so nobody can change it without the token. Each client can use only the mailboxes that match its
+//! patterns, for example `claude-*`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -19,32 +20,26 @@ use subtle::ConstantTimeEq;
 
 use crate::config::{AuthConfig, EnvMap};
 
-/// @brief The header with the client name of a signed request.
 pub const CLIENT_HEADER: &str = "x-inband-client";
-/// @brief The header with the time of a signed request, in milliseconds.
 pub const TIMESTAMP_HEADER: &str = "x-inband-timestamp";
-/// @brief The header with the single-use random value of a signed request.
 pub const NONCE_HEADER: &str = "x-inband-nonce";
-/// @brief The header with the HMAC signature.
 pub const SIGNATURE_HEADER: &str = "x-inband-signature";
-/// @brief The header with the session that a signed request acts for.
+/// The session that a signed request acts for.
 ///
-/// @details v1 clients do not send this header. The signed text contains the session only when the header is present.
-/// Thus the v1 signatures stay the same.
+/// v1 clients do not send this header, and the signed text contains the session only when the
+/// header is present: the v1 signatures thus stay valid.
 pub const SESSION_HEADER: &str = "x-inband-session";
-/// @brief The header prefix before the rename to InBand.
+/// The header prefix before the rename to InBand.
 const LEGACY_HEADER_PREFIX: &str = "x-agent-bridge-";
 
-/// @brief The minimum length of a token.
 const TOKEN_MIN_LENGTH: usize = 32;
-/// @brief The maximum age of a signed request: 5 minutes.
-///
-/// @details The daemon keeps each nonce for this time, and refuses a nonce that it saw before.
+/// The maximum age of a signed request. The daemon keeps each nonce for this time, and refuses a
+/// nonce that it saw before.
 const NONCE_WINDOW_MS: u64 = 300_000;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// @brief The reasons to refuse a request.
+/// The reasons to refuse a request.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
     #[error("auth client \"{0}\" has no token")]
@@ -87,7 +82,7 @@ pub enum AuthError {
     NotAdmin(String),
 }
 
-/// @brief How a request proved its client.
+/// How a request proved its client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
     /// A bearer token. It names a client, but no session.
@@ -98,7 +93,7 @@ pub enum AuthMode {
     Disabled,
 }
 
-/// @brief The client of one request, and what it can do.
+/// The client of one request, and what it can do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthInfo {
     pub client_id: String,
@@ -111,7 +106,7 @@ pub struct AuthInfo {
 }
 
 impl AuthInfo {
-    /// @brief Gives full access, when the configuration turns authentication off.
+    /// Returns full access, for a configuration with authentication off.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
@@ -124,7 +119,7 @@ impl AuthInfo {
     }
 }
 
-/// @brief One client of the configuration, with its token.
+/// One client of the configuration, with its token.
 #[derive(Debug)]
 struct Client {
     id: String,
@@ -135,11 +130,7 @@ struct Client {
 }
 
 impl Client {
-    /// @brief Gives the rights of the client for one request.
-    ///
-    /// @details An admin can use all mailboxes.
-    ///
-    /// @param mode How the request proved its client.
+    /// Returns the rights of the client for one request. An admin can use all mailboxes.
     fn info(&self, mode: AuthMode) -> AuthInfo {
         let all = || vec!["*".to_owned()];
         AuthInfo {
@@ -160,7 +151,7 @@ impl Client {
     }
 }
 
-/// @brief The clients of the configuration, and the nonces of the last 5 minutes.
+/// The clients of the configuration, and the nonces of the last 5 minutes.
 #[derive(Debug)]
 pub struct AuthRuntime {
     required: bool,
@@ -168,7 +159,7 @@ pub struct AuthRuntime {
     seen_nonces: Mutex<HashMap<String, u64>>,
 }
 
-/// @brief Tells if a token is an example value, for example `changeme`.
+/// Returns `true` for an example token, for example `changeme`.
 fn is_placeholder(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     let change_me = ["changeme", "change-me", "change_me", "change me"]
@@ -181,11 +172,7 @@ fn is_placeholder(token: &str) -> bool {
         || lower == "token"
 }
 
-/// @brief Finds the token of a client and checks it.
-///
-/// @details The token comes from `tokenEnv` when it is set, else from `token`.
-///
-/// @throws AuthError The token is missing, shorter than 32 chars, or an example value.
+/// Returns the token of a client: from `tokenEnv` when set, else from `token`.
 fn resolve_token(
     client_id: &str,
     token: Option<&str>,
@@ -209,11 +196,12 @@ fn resolve_token(
 }
 
 impl AuthRuntime {
-    /// @brief Reads the tokens of all clients.
+    /// Reads and checks the tokens of all clients. `config` `None` turns authentication off.
     ///
-    /// @param config The `auth` settings. `None` turns authentication off.
-    /// @param env The environment variables, with the values of `tokens.env`.
-    /// @throws AuthError A token is missing, too short, an example value, or the same as the token of another client.
+    /// # Errors
+    ///
+    /// Returns an error when a token is missing, shorter than 32 chars, an example value, or the
+    /// same as the token of another client.
     pub fn new(config: Option<&AuthConfig>, env: &EnvMap) -> Result<Self, AuthError> {
         let Some(config) = config else {
             return Ok(Self {
@@ -255,25 +243,24 @@ impl AuthRuntime {
         })
     }
 
-    /// @brief Tells if the requests must prove their client.
     #[must_use]
     pub fn required(&self) -> bool {
         self.required
     }
 
-    /// @brief Gives the tokens of all clients.
-    ///
-    /// @details The daemon uses them to refuse a message that contains a token.
+    /// Returns the tokens of all clients. The bus refuses a message that contains one.
     pub fn tokens(&self) -> impl Iterator<Item = &str> {
         self.clients.iter().map(|client| client.token.as_str())
     }
 
-    /// @brief Finds the client of an `Authorization: Bearer` header.
+    /// Returns the client of an `Authorization: Bearer` header.
     ///
-    /// @details The comparison takes the same time for each client. Thus the time does not show which token is near.
+    /// The comparison takes the same time for each client, so the time does not show which token is
+    /// near.
     ///
-    /// @param authorization The value of the header.
-    /// @throws AuthError The header is missing, has a bad form, or has an unknown token.
+    /// # Errors
+    ///
+    /// Returns an error when the header is missing, has a bad form, or has an unknown token.
     pub fn authenticate_bearer(&self, authorization: Option<&str>) -> Result<AuthInfo, AuthError> {
         let Some(authorization) = authorization else {
             return if self.required {
@@ -299,9 +286,11 @@ impl AuthRuntime {
             .ok_or(AuthError::InvalidBearer)
     }
 
-    /// @brief Finds the client of a signed request.
+    /// Returns the client of a signed request.
     ///
-    /// @throws AuthError See [`Self::verify_signed`].
+    /// # Errors
+    ///
+    /// See [`Self::verify_signed`].
     pub fn authenticate_signed(
         &self,
         request: &SignedRequest<'_>,
@@ -310,17 +299,16 @@ impl AuthRuntime {
         self.verify_signed(request, now_ms).map(|(info, _)| info)
     }
 
-    /// @brief Checks a signed request.
+    /// Checks a signed request, and returns its client and its session.
     ///
-    /// @details The checks are, in this order: the session id, the headers, the client, the time,
-    /// the form of the nonce, the signature, and last the reuse of the nonce.
-    /// The daemon keeps a nonce only when the signature is correct.
-    /// Thus a false request cannot use the nonce of a real request before it.
+    /// The checks are, in this order: the session id, the headers, the client, the time, the form
+    /// of the nonce, the signature, then the reuse of the nonce. The daemon keeps a nonce only
+    /// after a correct signature, so a false request cannot use the nonce of a real one first.
     ///
-    /// @param request The method, the URL, the body and the headers of the request.
-    /// @param now_ms The current time, in milliseconds.
-    /// @return The client, and the session of the request when it names one.
-    /// @throws AuthError A header is missing, the client is unknown, the request is too old, the nonce is bad or used, the session is not valid, or the signature is wrong.
+    /// # Errors
+    ///
+    /// Returns an error when a header is missing, the client is unknown, the request is older than
+    /// 5 minutes, the nonce is bad or used, the session id is not valid, or the signature is wrong.
     pub fn verify_signed(
         &self,
         request: &SignedRequest<'_>,
@@ -384,9 +372,11 @@ impl AuthRuntime {
         Ok((client.info(AuthMode::Hmac), session))
     }
 
-    /// @brief Finds the client of a request: bearer when an `Authorization` header is present, else signed.
+    /// Returns the client of a request: bearer when it has an `Authorization` header, else signed.
     ///
-    /// @throws AuthError See [`Self::authenticate_bearer`] and [`Self::authenticate_signed`].
+    /// # Errors
+    ///
+    /// See [`Self::authenticate_bearer`] and [`Self::authenticate_signed`].
     pub fn authenticate(
         &self,
         request: &SignedRequest<'_>,
@@ -396,13 +386,14 @@ impl AuthRuntime {
             .map(|(info, _)| info)
     }
 
-    /// @brief Finds the client of a request, and its session.
+    /// Returns the client of a request, and its session when the request is signed.
     ///
-    /// @details A bearer request has no session. Its token is the same for all the sessions of the client.
-    /// It thus cannot tell which session sends the request.
+    /// A bearer request has no session: all the sessions of a client share its token, so the token
+    /// cannot tell which session sends the request.
     ///
-    /// @return The client, and the session of a signed request.
-    /// @throws AuthError See [`Self::authenticate_bearer`] and [`Self::verify_signed`].
+    /// # Errors
+    ///
+    /// See [`Self::authenticate_bearer`] and [`Self::verify_signed`].
     pub fn authenticate_request(
         &self,
         request: &SignedRequest<'_>,
@@ -415,7 +406,7 @@ impl AuthRuntime {
     }
 }
 
-/// @brief The parts of a request that the signature check reads.
+/// The parts of a request that the signature check reads.
 pub struct SignedRequest<'a> {
     pub method: &'a str,
     /// Path and query, or a full URL.
@@ -426,7 +417,7 @@ pub struct SignedRequest<'a> {
 }
 
 impl<'a> SignedRequest<'a> {
-    /// @brief Gives a header. The old `x-agent-bridge-*` name is accepted for the old hooks.
+    /// Returns a header. The pre-rename `x-agent-bridge-*` name also works, for the old hooks.
     fn header(&self, name: &str) -> Option<&'a str> {
         (self.headers)(name).or_else(|| {
             let rest = name.strip_prefix("x-inband-")?;
@@ -435,11 +426,10 @@ impl<'a> SignedRequest<'a> {
     }
 }
 
-/// @brief Tells if a session id is valid.
+/// Returns `true` for a valid session id: 1 to 128 letters, digits, `.`, `_`, `:` and `-`.
 ///
-/// @details Claude Code and Codex use uuids. `OpenCode` uses ids such as `ses_f0311d340ffenkofYtqi2xYpYM`.
-/// A valid id has 1 to 128 letters, digits, `.`, `_`, `:` and `-`.
-/// It thus cannot end a line of the signed text.
+/// These are the uuids of Claude Code and Codex, and the ids of `OpenCode` (`ses_…`). No such char
+/// can end a line of the signed text.
 #[must_use]
 pub fn is_valid_session(session: &str) -> bool {
     (1..=128).contains(&session.len())
@@ -448,7 +438,6 @@ pub fn is_valid_session(session: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
 
-/// @brief Tells if a nonce has 6 to 128 safe chars.
 fn is_valid_nonce(nonce: &str) -> bool {
     (6..=128).contains(&nonce.len())
         && nonce
@@ -456,19 +445,20 @@ fn is_valid_nonce(nonce: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
 
-/// @brief Compares two texts in a time that does not depend on their content.
+/// Compares two texts in a time that does not depend on their content.
 ///
-/// @details The function compares the SHA-256 digests. The time thus does not show where the texts differ, or their lengths.
+/// The function compares their SHA-256 digests, so the time shows neither where the texts differ
+/// nor their lengths.
 fn constant_equal(left: &str, right: &str) -> bool {
     let left_hash = Sha256::digest(left.as_bytes());
     let right_hash = Sha256::digest(right.as_bytes());
     bool::from(left_hash.as_slice().ct_eq(right_hash.as_slice())) && left.len() == right.len()
 }
 
-/// @brief Writes JSON with the keys of each object in sorted order.
+/// Writes JSON with the keys of each object in sorted order, as the v1 clients do.
 ///
-/// @details The signed text contains a digest of the body. The client and the daemon must thus write the body in the same way.
-/// The v1 clients write it like this.
+/// The signed text contains a digest of the body, so the client and the daemon must write the body
+/// in the same way.
 #[must_use]
 pub fn stable_stringify(value: &Value) -> String {
     let mut out = String::new();
@@ -476,7 +466,6 @@ pub fn stable_stringify(value: &Value) -> String {
     out
 }
 
-/// @brief Writes one JSON value for [`stable_stringify`].
 fn write_stable(value: &Value, out: &mut String) {
     match value {
         Value::Array(items) => {
@@ -507,7 +496,7 @@ fn write_stable(value: &Value, out: &mut String) {
     }
 }
 
-/// @brief Gives the path and the query of a URL, as the signed text contains them.
+/// Returns the path and the query of a URL, as the signed text contains them.
 fn path_and_query(url: &str) -> String {
     let base = url::Url::parse("http://127.0.0.1").ok();
     let parsed = url::Url::parse(url)
@@ -522,7 +511,7 @@ fn path_and_query(url: &str) -> String {
     }
 }
 
-/// @brief The parts of a request that the signature covers.
+/// The parts of a request that the signature covers.
 struct SigningInput<'a> {
     client_id: &'a str,
     method: &'a str,
@@ -533,13 +522,10 @@ struct SigningInput<'a> {
     session: Option<&'a str>,
 }
 
-/// @brief Calculates the signature of a request.
+/// Returns `sha256=<hex HMAC-SHA256>` of the request.
 ///
-/// @details The signed text has one part on each line: the method, the path and query, the SHA-256 digest of the body, the time, the nonce, the client, and the session when there is one.
-///
-/// @param token The token of the client.
-/// @param input The parts of the request.
-/// @return `sha256=<hex HMAC-SHA256>`.
+/// The signed text has one line for each part: the method, the path and query, the SHA-256 digest
+/// of the body, the time, the nonce, the client, and the session when there is one.
 fn signature_value(token: &str, input: &SigningInput<'_>) -> String {
     let body = input.body.map(stable_stringify).unwrap_or_default();
     let digest = hex::encode(Sha256::digest(body.as_bytes()));
@@ -561,15 +547,10 @@ fn signature_value(token: &str, input: &SigningInput<'_>) -> String {
     format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
-/// @brief Makes the signature headers of a request.
+/// Returns the signature headers of a request: client, time, nonce, signature, and the session when
+/// given.
 ///
-/// @param client_id The client name.
-/// @param token The token of the client.
-/// @param request The method, the URL and the JSON body.
-/// @param now_ms The current time, in milliseconds.
-/// @param nonce A fixed nonce for the tests. `None` makes a random nonce.
-/// @param session The session that the request acts for.
-/// @return The headers: client, time, nonce, signature, and the session when given.
+/// `nonce` `None` makes a random nonce; the tests give a fixed one.
 #[must_use]
 pub fn sign_request(
     client_id: &str,
@@ -606,9 +587,8 @@ pub fn sign_request(
     headers
 }
 
-/// @brief Tells if a mailbox matches a pattern.
-///
-/// @details `*` matches all mailboxes. `claude-*` matches the mailboxes that start with `claude-`. Other patterns match one mailbox.
+/// Returns `true` when a mailbox matches a pattern: `*` matches all, `claude-*` matches the names
+/// that start with `claude-`, other patterns match one name.
 #[must_use]
 pub fn agent_matches_pattern(agent: &str, pattern: &str) -> bool {
     let agent = agent.trim().to_ascii_lowercase();
@@ -622,12 +602,11 @@ pub fn agent_matches_pattern(agent: &str, pattern: &str) -> bool {
     }
 }
 
-/// @brief Makes sure that a client can use a mailbox.
+/// Makes sure that a client can use a mailbox. `field` names the request field, for the error.
 ///
-/// @param auth The client.
-/// @param agent The mailbox.
-/// @param field The request field that names the mailbox, for the error text.
-/// @throws AuthError::NotAuthorized No pattern of the client matches the mailbox.
+/// # Errors
+///
+/// Returns [`AuthError::NotAuthorized`] when no pattern of the client matches the mailbox.
 pub fn assert_agent_authorized(
     auth: &AuthInfo,
     agent: &str,
@@ -648,9 +627,11 @@ pub fn assert_agent_authorized(
     })
 }
 
-/// @brief Makes sure that a client can use all the mailboxes of a family, for example all `claude-*`.
+/// Makes sure that a client can use all the mailboxes of a family, for example all `claude-*`.
 ///
-/// @throws AuthError::NotAuthorized The client cannot use the whole family.
+/// # Errors
+///
+/// Returns [`AuthError::NotAuthorized`] when the client cannot use the whole family.
 pub fn assert_family_authorized(
     auth: &AuthInfo,
     prefix: &str,
@@ -672,9 +653,11 @@ pub fn assert_family_authorized(
     })
 }
 
-/// @brief Makes sure that the client is an admin.
+/// Makes sure that the client is an admin.
 ///
-/// @throws AuthError::NotAdmin The client is not an admin.
+/// # Errors
+///
+/// Returns [`AuthError::NotAdmin`] for any other client.
 pub fn assert_admin(auth: &AuthInfo) -> Result<(), AuthError> {
     if auth.admin {
         Ok(())
@@ -683,17 +666,13 @@ pub fn assert_admin(auth: &AuthInfo) -> Result<(), AuthError> {
     }
 }
 
-/// @brief Gives the mailboxes whose history the client can read.
-///
-/// @return The patterns, or `None` for all mailboxes.
+/// Returns the mailboxes whose history the client can read, or `None` for all.
 #[must_use]
 pub fn visible_patterns(auth: &AuthInfo) -> Option<&[String]> {
     (!auth.admin).then_some(auth.agents.as_slice())
 }
 
-/// @brief Gives the mailboxes that `ping` shows to the client.
-///
-/// @return The patterns, or `None` for all mailboxes.
+/// Returns the mailboxes that `ping` shows to the client, or `None` for all.
 #[must_use]
 pub fn directory_patterns(auth: &AuthInfo) -> Option<&[String]> {
     (!auth.admin && !auth.directory.iter().any(|pattern| pattern == "*"))
@@ -714,7 +693,6 @@ mod tests {
     const ADMIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const NOW: u64 = 1_790_000_000_000;
 
-    /// @brief Makes the settings of a client for a test.
     fn client(token: &str, agents: &[&str], admin: bool) -> AuthClientConfig {
         AuthClientConfig {
             token: Some(token.to_owned()),
@@ -725,7 +703,7 @@ mod tests {
         }
     }
 
-    /// @brief Makes the clients `claude`, `codex` and `admin` for a test.
+    /// Returns the clients `claude`, `codex` and `admin`.
     fn runtime() -> AuthRuntime {
         let mut clients = BTreeMap::new();
         clients.insert("claude".to_owned(), client(CLAUDE, &["claude-*"], false));
@@ -741,7 +719,6 @@ mod tests {
         .unwrap()
     }
 
-    /// @brief Makes a signed request for a test.
     fn signed<'a>(
         method: &'a str,
         url: &'a str,
@@ -838,7 +815,7 @@ mod tests {
         }
     }
 
-    /// @brief Puts signature headers in a map. `rename` changes their prefix.
+    /// Puts signature headers in a map. `rename` replaces their prefix.
     fn header_map(
         headers: &[(&'static str, String)],
         rename: Option<&str>,

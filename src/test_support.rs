@@ -1,7 +1,5 @@
-//! @file test_support.rs
-//! @brief Shared test tools: an app on a new bus in memory, and requests signed like the hooks and the shims sign them.
-//!
-//! @details The tools panic when a step fails: a failed preparation is a failed test.
+//! Shared test tools: the full app on a new bus in memory, and requests signed like the hooks and
+//! the shims sign them. The tools panic when a step fails: a failed setup is a failed test.
 
 #![allow(clippy::missing_panics_doc, clippy::must_use_candidate)]
 
@@ -22,36 +20,25 @@ use crate::db::open_in_memory;
 use crate::http::{AppState, MAX_BODY_BYTES, router};
 use crate::wake::{WakeDispatch, WakeFuture, WakeInput, WakeResult};
 
-/// @brief The token of the `claude` client.
 pub const CLAUDE: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-/// @brief The token of the `codex` client.
 pub const CODEX: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-/// @brief The token of the `opencode` client.
 pub const OPENCODE: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-/// @brief The token of the `admin` client.
 pub const ADMIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-/// @brief A Codex session id.
 pub const CODEX_SESSION: &str = "019f6767-789c-73b2-bc5c-ac8575f29efd";
-/// @brief Another Codex session id.
 pub const OTHER_CODEX_SESSION: &str = "019f6768-789c-73b2-bc5c-ac8575f29efd";
-/// @brief The name and the token of the `claude` client.
 pub const CLAUDE_CLIENT: (&str, &str) = ("claude", CLAUDE);
-/// @brief The name and the token of the `codex` client.
 pub const CODEX_CLIENT: (&str, &str) = ("codex", CODEX);
-/// @brief The name and the token of the `opencode` client.
 pub const OPENCODE_CLIENT: (&str, &str) = ("opencode", OPENCODE);
 
-/// @brief A wake dispatcher that always fails.
+/// A wake dispatcher whose wakes always fail.
 struct NoWake;
 
 impl WakeDispatch for NoWake {
-    /// @brief Fails the wake.
     fn dispatch(&self, _target: &WakeTarget, _input: WakeInput) -> WakeFuture {
         Box::pin(async { WakeResult::failed("no wake in tests") })
     }
 }
 
-/// @brief Makes the settings of a client.
 fn client(token: &str, agents: &[&str], admin: bool) -> AuthClientConfig {
     AuthClientConfig {
         token: Some(token.to_owned()),
@@ -62,7 +49,7 @@ fn client(token: &str, agents: &[&str], admin: bool) -> AuthClientConfig {
     }
 }
 
-/// @brief Makes the full app, with the MCP endpoint, on a new bus in memory.
+/// The full app, MCP endpoint included, on a new bus in memory.
 pub fn app() -> (Router, Arc<Bridge>) {
     let mut clients = BTreeMap::new();
     clients.insert("claude".to_owned(), client(CLAUDE, &["claude-*"], false));
@@ -96,7 +83,6 @@ pub fn app() -> (Router, Arc<Bridge>) {
     (router(state, mcp), bridge)
 }
 
-/// @brief Gives the current time in milliseconds.
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -105,7 +91,6 @@ pub fn now_ms() -> u64 {
         })
 }
 
-/// @brief Adds a JSON body to a request.
 fn with_body(builder: axum::http::request::Builder, body: Option<&Value>) -> HttpRequest<Body> {
     match body {
         Some(body) => builder
@@ -117,7 +102,7 @@ fn with_body(builder: axum::http::request::Builder, body: Option<&Value>) -> Htt
     }
 }
 
-/// @brief Makes a request signed like a hook or a shim, for `session` when given.
+/// A request signed like a hook or a shim signs it, for `session` when given.
 pub fn signed(
     method: &str,
     path: &str,
@@ -144,7 +129,7 @@ pub fn signed(
     with_body(builder, body)
 }
 
-/// @brief Makes a request with a bearer token, like an MCP client.
+/// A request with a bearer token, like an MCP client sends it.
 pub fn bearer(method: &str, path: &str, token: &str, body: Option<&Value>) -> HttpRequest<Body> {
     let builder = HttpRequest::builder()
         .method(method)
@@ -154,7 +139,7 @@ pub fn bearer(method: &str, path: &str, token: &str, body: Option<&Value>) -> Ht
     with_body(builder, body)
 }
 
-/// @brief Sends a request, and gives the status and the raw body.
+/// Sends a request, and returns the status and the raw body.
 pub async fn call_raw(app: &Router, request: HttpRequest<Body>) -> (StatusCode, String) {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
@@ -162,13 +147,13 @@ pub async fn call_raw(app: &Router, request: HttpRequest<Body>) -> (StatusCode, 
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// @brief Sends a request, and gives the status and the JSON body.
+/// Sends a request, and returns the status and the JSON body.
 pub async fn call(app: &Router, request: HttpRequest<Body>) -> (StatusCode, Value) {
     let (status, body) = call_raw(app, request).await;
     (status, serde_json::from_str(&body).unwrap_or(Value::Null))
 }
 
-/// @brief Runs the Claude Code `SessionStart` hook of a session. It binds the mailbox to the session.
+/// Runs the Claude Code `SessionStart` hook of `session`, which binds `mailbox` to it.
 pub async fn start_claude(app: &Router, mailbox: &str, session: &str) -> (StatusCode, Value) {
     let path = format!("/claude/hook?agent={mailbox}&event=SessionStart");
     call(
@@ -178,9 +163,7 @@ pub async fn start_claude(app: &Router, mailbox: &str, session: &str) -> (Status
     .await
 }
 
-/// @brief Serves the full app on a loopback port, for the client tests.
-///
-/// @return The URL and the bus.
+/// Serves the full app on a loopback port, and returns its URL and its bus.
 pub async fn serve() -> (String, Arc<Bridge>) {
     let (app, bridge) = app();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -191,7 +174,6 @@ pub async fn serve() -> (String, Arc<Bridge>) {
     (base, bridge)
 }
 
-/// @brief Makes a client of the served app.
 pub fn daemon_client(base: &str, (client_id, token): (&str, &str)) -> crate::client::Client {
     crate::client::Client::new(base, client_id, Some(token.to_owned())).unwrap()
 }

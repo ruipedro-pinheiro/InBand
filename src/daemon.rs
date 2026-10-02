@@ -1,8 +1,7 @@
-//! @file daemon.rs
-//! @brief The `inband daemon` command.
+//! The `inband daemon` command.
 //!
-//! @details The daemon reads the install directory: `config.json`, `tokens.env` and `bridge.db`.
-//! It then serves the routes of the hooks and the MCP endpoint on the loopback interface.
+//! The daemon reads its install directory (`config.json`, `tokens.env`, `bridge.db`), then serves
+//! the hook routes and the MCP endpoint on the loopback interface.
 
 use std::future::{Future, IntoFuture};
 use std::path::{Path, PathBuf};
@@ -22,14 +21,11 @@ use crate::dispatch::RealWake;
 use crate::http::{AppState, MAX_BODY_BYTES, router};
 use crate::tokens::{LoadOutcome, TokensError, load_token_env_file};
 
-/// @brief The time that the open requests get to finish when the daemon stops.
-///
-/// @details A wait or a long poll can take minutes. After this time, the daemon stops it.
+/// The time that open requests get to finish when the daemon stops. A wait or a long poll can last
+/// minutes; after this time, the daemon stops it.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
-/// @brief The default install directory, relative to the home directory.
 const INSTALL_DIR: &str = ".local/share/mcp-servers/inband";
 
-/// @brief The reasons why the daemon cannot start or continue.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
     #[error("no install directory: set HOME or INBAND_HOME, or pass --dir")]
@@ -62,16 +58,13 @@ pub enum DaemonError {
     Serve(std::io::Error),
 }
 
-/// @brief The options of the daemon.
 pub struct DaemonOptions {
     /// The install directory. Default: `$INBAND_HOME`, else `~/.local/share/mcp-servers/inband`.
     pub directory: Option<PathBuf>,
     pub shutdown_grace: Duration,
 }
 
-/// @brief Gives the default install directory.
-///
-/// @return `$INBAND_HOME`, else `~/.local/share/mcp-servers/inband`, else `None` without a home directory.
+/// Returns `$INBAND_HOME`, else `~/.local/share/mcp-servers/inband`, or `None` without a home.
 #[must_use]
 pub fn default_directory(env: &EnvMap) -> Option<PathBuf> {
     let non_empty = |name: &str| env.get(name).filter(|value| !value.is_empty());
@@ -80,10 +73,11 @@ pub fn default_directory(env: &EnvMap) -> Option<PathBuf> {
         .or_else(|| non_empty("HOME").map(|home| Path::new(home).join(INSTALL_DIR)))
 }
 
-/// @brief Runs the daemon until it receives SIGINT or SIGTERM.
+/// Runs the daemon until it receives SIGINT or SIGTERM. `directory` `None` uses the default.
 ///
-/// @param directory The install directory. `None` uses the default.
-/// @throws DaemonError The first error at start, or a failure of the server.
+/// # Errors
+///
+/// Returns the first error at start, or a failure of the server.
 pub async fn run(directory: Option<PathBuf>) -> Result<(), DaemonError> {
     let env: EnvMap = std::env::vars().collect();
     let options = DaemonOptions {
@@ -94,7 +88,7 @@ pub async fn run(directory: Option<PathBuf>) -> Result<(), DaemonError> {
     serve(listener, shutdown_signal(), options.shutdown_grace).await
 }
 
-/// @brief A daemon that has read its files and opened its socket.
+/// A daemon that read its files and opened its socket.
 pub struct Listening {
     pub address: String,
     listener: TcpListener,
@@ -102,15 +96,15 @@ pub struct Listening {
     bridge: Arc<Bridge>,
 }
 
-/// @brief Reads the install directory and opens the socket.
+/// Reads the install directory and opens the socket.
 ///
-/// @details With an explicit directory, the daemon reads the `tokens.env` of that directory, unless `INBAND_TOKENS_FILE` is set.
-/// Without authentication, the daemon refuses an address that other machines can reach.
+/// An explicit directory uses its own `tokens.env`, unless `INBAND_TOKENS_FILE` is set. Without
+/// authentication, the daemon refuses an address that other machines can reach.
 ///
-/// @param options The directory and the stop time.
-/// @param env The environment variables.
-/// @return The daemon, ready to serve.
-/// @throws DaemonError The configuration is missing or not valid, a token cannot be used, the address is not safe, or the database or the socket fails.
+/// # Errors
+///
+/// Returns an error when the configuration is missing or not valid, a token is not usable, the
+/// address is not safe, or the database or the socket fails.
 pub async fn bind(options: &DaemonOptions, mut env: EnvMap) -> Result<Listening, DaemonError> {
     let explicit = options.directory.is_some();
     let directory = options
@@ -186,14 +180,11 @@ pub async fn bind(options: &DaemonOptions, mut env: EnvMap) -> Result<Listening,
     })
 }
 
-/// @brief Serves the requests until `shutdown` completes.
+/// Serves until `shutdown` completes, then gives open requests `grace` to finish.
 ///
-/// @details The daemon then gives `grace` to the open requests, and stops the others.
+/// # Errors
 ///
-/// @param listening The daemon from [`bind`].
-/// @param shutdown Completes when the daemon must stop.
-/// @param grace The time for the open requests.
-/// @throws DaemonError The server fails.
+/// Returns an error when the server fails.
 pub async fn serve(
     listening: Listening,
     shutdown: impl Future<Output = ()>,
@@ -232,7 +223,6 @@ pub async fn serve(
     }
 }
 
-/// @brief Changes the end of the server task into a result.
 fn finished(
     result: Result<std::io::Result<()>, tokio::task::JoinError>,
 ) -> Result<(), DaemonError> {
@@ -243,7 +233,6 @@ fn finished(
     }
 }
 
-/// @brief Completes when the process receives SIGINT or SIGTERM.
 async fn shutdown_signal() {
     let terminate = async {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {

@@ -1,6 +1,3 @@
-//! @file mcp_tests.rs
-//! @brief The tests of the MCP tools on the HTTP endpoint.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +9,7 @@ use serde_json::{Value, json};
 use crate::bridge::Bridge;
 use crate::test_support::*;
 
-/// @brief Gives the JSON-RPC messages of an SSE or JSON answer.
+/// The JSON-RPC messages of an SSE or JSON answer.
 fn messages(body: &str) -> Vec<Value> {
     let events: Vec<Value> = body
         .lines()
@@ -26,7 +23,6 @@ fn messages(body: &str) -> Vec<Value> {
     }
 }
 
-/// @brief Makes a `tools/call` request, with `_meta` when given.
 fn tool_call(name: &str, arguments: &Value, meta: Option<&Value>) -> Value {
     let mut params = json!({ "name": name, "arguments": arguments });
     if let Some(meta) = meta {
@@ -35,7 +31,6 @@ fn tool_call(name: &str, arguments: &Value, meta: Option<&Value>) -> Value {
     json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params })
 }
 
-/// @brief Adds the MCP version header to a request.
 fn with_protocol(mut request: HttpRequest<Body>) -> HttpRequest<Body> {
     request
         .headers_mut()
@@ -43,9 +38,7 @@ fn with_protocol(mut request: HttpRequest<Body>) -> HttpRequest<Body> {
     request
 }
 
-/// @brief Runs a tool call.
-///
-/// @return True when the result is an error, and the JSON of the result.
+/// Runs a tool call. Returns whether the result is an error, and its JSON.
 async fn run(app: &Router, request: HttpRequest<Body>) -> (bool, Value) {
     let (_, body) = call_raw(app, with_protocol(request)).await;
     let reply = messages(&body)
@@ -60,7 +53,6 @@ async fn run(app: &Router, request: HttpRequest<Body>) -> (bool, Value) {
     (result["isError"].as_bool().unwrap_or(false), value)
 }
 
-/// @brief Runs a tool call, and gives the raw text of the result.
 async fn run_text(app: &Router, request: HttpRequest<Body>) -> String {
     let (_, body) = call_raw(app, with_protocol(request)).await;
     let reply = messages(&body)
@@ -73,14 +65,12 @@ async fn run_text(app: &Router, request: HttpRequest<Body>) -> String {
         .to_owned()
 }
 
-/// @brief Gives the mailbox of a Codex session.
 fn codex_mailbox(session: &str) -> String {
     format!("codex-{session}")
 }
 
-/// @brief Makes team `x`: the Claude lead `claude-lead-0001` (session `sess-lead`) and the Codex worker `CODEX_SESSION`.
-///
-/// @details Each step goes through the HTTP routes, like the real hooks.
+/// Team `x`: the Claude lead `claude-lead-0001` (session `sess-lead`) and the Codex worker
+/// `CODEX_SESSION`. Each step goes through the HTTP routes, like the real hooks.
 async fn team_with_codex(app: &Router) {
     start_claude(app, "claude-lead-0001", "sess-lead").await;
     let start = json!({"hook_event_name": "SessionStart", "session_id": CODEX_SESSION, "cwd": "/repo", "source": "startup"});
@@ -154,9 +144,7 @@ async fn the_tool_list_has_no_way_to_take_the_lead() {
     );
 }
 
-/// @brief Codex acts with the session that Codex puts in `_meta`.
-///
-/// @details The model writes the arguments, not `_meta`. A session id in the arguments changes nothing.
+/// The model writes the arguments, not `_meta`: a session id in the arguments changes nothing.
 #[tokio::test]
 async fn codex_speaks_with_the_session_that_codex_puts_in_meta() {
     let (app, _) = app();
@@ -224,10 +212,8 @@ async fn codex_speaks_with_the_session_that_codex_puts_in_meta() {
     assert!(is_error, "session id smuggled in the arguments: {refused}");
 }
 
-/// @brief A Claude Code bearer call acts for no session.
-///
-/// @details Claude Code puts no session in `_meta`. Its bearer calls thus cannot act for a bound mailbox.
-/// A session id of another session is also refused.
+/// Claude Code puts no session in `_meta`, so its bearer calls cannot act for a bound mailbox. A
+/// session id of another session is refused too.
 #[tokio::test]
 async fn a_claude_bearer_call_speaks_for_no_session() {
     let (app, _) = app();
@@ -259,9 +245,7 @@ async fn a_claude_bearer_call_speaks_for_no_session() {
     assert!(is_error, "{refused}");
 }
 
-/// @brief A signed session reads only its own mail.
-///
-/// @details The messages stay in compact JSON: each message names its sender with a key.
+/// Messages stay compact JSON: each message names its sender with a key.
 #[tokio::test]
 async fn a_signed_session_reads_only_its_own_mail() {
     let (app, _) = app();
@@ -321,9 +305,8 @@ async fn a_signed_session_reads_only_its_own_mail() {
     assert!(text.starts_with('{') && !text.contains("\n  "), "{text}");
 }
 
-/// @brief `ping` and `clear_conversation` give each caller only what it can see.
-///
-/// @details The agent rows have the same fields, so `ping` gives one TOON table: one header, one line for each agent.
+/// The agent rows have the same fields, so `ping` returns one TOON table: a header, then one line
+/// for each agent.
 #[tokio::test]
 async fn ping_and_clear_follow_the_caller() {
     let (app, _) = app();
@@ -382,7 +365,6 @@ async fn ping_and_clear_follow_the_caller() {
     assert!(!is_error, "{cleared}");
 }
 
-/// @brief Sends a message after a short time, while a wait is in progress.
 async fn send_later(bridge: Arc<Bridge>, to: String) {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let lead = crate::bridge::Caller {
@@ -394,9 +376,7 @@ async fn send_later(bridge: Arc<Bridge>, to: String) {
         .unwrap();
 }
 
-/// @brief `wait_for_messages` sends progress notifications, then gives the mail.
-///
-/// @details The result is a preview: the mail stays unread.
+/// The result is a preview: the mail stays unread.
 #[tokio::test]
 async fn wait_for_messages_beats_then_returns_a_preview() {
     let (app, bridge) = app();

@@ -1,32 +1,28 @@
-//! @file opencode_session.rs
-//! @brief The mailboxes of `OpenCode` sessions.
+//! Mailbox names of `OpenCode` sessions: `opencode-<16 hex chars>`.
 //!
-//! @details An `OpenCode` mailbox is `opencode-<16 hex chars>`.
-//! The hex chars come from the SHA-256 digest of the session id.
-//! A session id has upper case and lower case letters, but a mailbox name has only lower case.
-//! Two ids can differ only in case. A lower case copy of the id can thus give two sessions the same mailbox.
-//! The digest of the exact id prevents this.
-//! The daemon calculates the digest again to make sure that a session acts only for its own mailbox.
+//! An `OpenCode` session id mixes upper and lower case (`ses_f0311d340ffenkofYtqi2xYpYM`), but a
+//! mailbox name is lower case. Two ids can differ only in case, so a lower-case copy of the id
+//! could give two sessions the same mailbox. The name thus contains the start of the SHA-256 digest
+//! of the exact id. The daemon calculates the digest again to make sure that a session acts only
+//! for its own mailbox.
 
 use sha2::{Digest, Sha256};
 
-/// @brief The prefix of all `OpenCode` mailboxes.
+/// The prefix of the `OpenCode` mailboxes.
 pub const OPENCODE_FAMILY: &str = "opencode";
-/// @brief The number of hex chars of the digest in a mailbox name.
 const DIGEST_CHARS: usize = 16;
-/// @brief The maximum length of a session id.
 const MAX_SESSION_ID: usize = 128;
 
-/// @brief The error for a session id that is not valid.
+/// A session id that [`is_valid_session_id`] refuses.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("invalid OpenCode session id \"{0}\"")]
 pub struct InvalidSessionId(pub String);
 
-/// @brief Gives the mailbox of an `OpenCode` session.
+/// Returns the mailbox of an `OpenCode` session.
 ///
-/// @param session_id The exact session id.
-/// @return The name `opencode-<16 hex chars>`.
-/// @throws InvalidSessionId The id is empty, longer than 128 chars, or has chars other than ASCII letters, digits, `_` and `-`.
+/// # Errors
+///
+/// Returns an error when [`is_valid_session_id`] refuses the id.
 pub fn mailbox(session_id: &str) -> Result<String, InvalidSessionId> {
     if !is_valid_session_id(session_id) {
         return Err(InvalidSessionId(session_id.to_owned()));
@@ -35,14 +31,9 @@ pub fn mailbox(session_id: &str) -> Result<String, InvalidSessionId> {
     Ok(format!("{OPENCODE_FAMILY}-{}", &digest[..DIGEST_CHARS]))
 }
 
-/// @brief Tells if a session id is valid.
+/// Returns `true` for 1 to 128 ASCII letters, digits, `_` and `-`.
 ///
-/// @details A valid id has 1 to 128 ASCII letters, digits, `_` and `-`.
-/// Such an id is safe as one segment of a URL path.
-/// It has no `/`, and it cannot be `.` or `..`.
-///
-/// @param session_id The session id to examine.
-/// @return True for a valid id.
+/// Such an id is safe as one segment of a URL path: it has no `/`, and it cannot be `.` or `..`.
 #[must_use]
 pub fn is_valid_session_id(session_id: &str) -> bool {
     !session_id.is_empty()
@@ -52,10 +43,7 @@ pub fn is_valid_session_id(session_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// @brief Tells if a name is the mailbox of an `OpenCode` session.
-///
-/// @param name The mailbox name.
-/// @return True for `opencode-<16 hex chars>`.
+/// Returns `true` for an `opencode-<16 hex chars>` name.
 #[must_use]
 pub fn is_session_mailbox(name: &str) -> bool {
     name.strip_prefix("opencode-").is_some_and(|digest| {
@@ -66,11 +54,7 @@ pub fn is_session_mailbox(name: &str) -> bool {
     })
 }
 
-/// @brief Tells if a session owns a mailbox.
-///
-/// @param session_id The session id of the request.
-/// @param mailbox_name The mailbox name.
-/// @return True when the mailbox of the session is `mailbox_name`.
+/// Returns `true` when `mailbox_name` is the mailbox of `session_id`.
 #[must_use]
 pub fn owns(session_id: &str, mailbox_name: &str) -> bool {
     mailbox(session_id).is_ok_and(|derived| derived == mailbox_name)

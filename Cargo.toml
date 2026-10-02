@@ -11,11 +11,6 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# The doc comments use Doxygen tags: @throws replaces the "# Errors" section, and the names
-# after @param and @throws stay without backticks.
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-doc_markdown = "allow"
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }

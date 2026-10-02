@@ -1,9 +1,6 @@
-//! @file tokens.rs
-//! @brief Reads `tokens.env` and finds the token of each client.
+//! Reads `tokens.env` and finds the token of each client.
 //!
-//! @details Each client (Claude Code, Codex, `OpenCode`, admin) has its own token.
-//! Before the rename to InBand, the variables started with `AGENT_BRIDGE_`.
-//! These old names still work.
+//! Before the rename to InBand, the variables started with `AGENT_BRIDGE_`. These names still work.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -11,34 +8,28 @@ use std::path::{Path, PathBuf};
 
 use crate::config::EnvMap;
 
-/// @brief The variable prefix before the rename.
 const LEGACY_PREFIX: &str = "AGENT_BRIDGE_";
-/// @brief The variable prefix of InBand.
 const PREFIX: &str = "INBAND_";
-/// @brief The token file, relative to the home directory.
+/// The token file, relative to the home directory.
 const CURRENT_FILE: &str = ".local/share/mcp-servers/inband/tokens.env";
-/// @brief The token file before the rename, relative to the home directory.
+/// The token file before the rename, relative to the home directory.
 const LEGACY_FILE: &str = ".local/share/mcp-servers/agent-bridge/tokens.env";
-/// @brief The permission bits of the group and of the other users.
+/// The permission bits of the group and of the other users.
 const GROUP_OTHER_BITS: u32 = 0o077;
 
-/// @brief Tells if only the owner can read and write a file.
-///
-/// @param mode The Unix permission bits of the file.
-/// @return True when the group and the other users have no permission.
+/// Returns `true` when only the owner of a file can read and write it.
 #[must_use]
 pub fn is_private_mode(mode: u32) -> bool {
     mode & GROUP_OTHER_BITS == 0
 }
 
-/// @brief The error when the token file exists but cannot be read.
 #[derive(Debug, thiserror::Error)]
 pub enum TokensError {
     #[error("cannot read {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
 }
 
-/// @brief The result of [`load_token_env_file`].
+/// The outcome of [`load_token_env_file`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadOutcome {
     /// The file was read. `private` is false when other users can read it.
@@ -49,11 +40,7 @@ pub enum LoadOutcome {
     NoHome,
 }
 
-/// @brief Copies each `AGENT_BRIDGE_X` value to `INBAND_X`.
-///
-/// @details A value that is already in `INBAND_X` stays.
-///
-/// @param env The variables, changed in place.
+/// Copies each `AGENT_BRIDGE_X` value to `INBAND_X`, unless `INBAND_X` is set.
 pub fn apply_legacy_env(env: &mut EnvMap) {
     let legacy: Vec<(String, String)> = env
         .iter()
@@ -67,14 +54,10 @@ pub fn apply_legacy_env(env: &mut EnvMap) {
     }
 }
 
-/// @brief Finds the token file.
+/// Returns the token file: `INBAND_TOKENS_FILE`, else the current path, else the path before the
+/// rename when only that one exists.
 ///
-/// @details The order is: `INBAND_TOKENS_FILE`, then the current path, then the path before the rename.
-/// The old path is used only when it exists and the current path does not.
-///
-/// @param env The variables of the process.
-/// @param exists Tells if a file exists. The tests replace it.
-/// @return The path, or `None` when there is no home directory.
+/// `exists` checks a path; the tests replace it.
 fn default_token_file(env: &EnvMap, exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     if let Some(path) = env
         .get("INBAND_TOKENS_FILE")
@@ -92,13 +75,10 @@ fn default_token_file(env: &EnvMap, exists: impl Fn(&Path) -> bool) -> Option<Pa
     })
 }
 
-/// @brief Adds the `NAME=value` lines of a token file to the variables.
+/// Adds the `NAME=value` lines of a token file to `env`.
 ///
-/// @details Only names in upper case with `_` and digits are read.
-/// A variable that is already set keeps its value.
-///
-/// @param text The text of the token file.
-/// @param env The variables, changed in place.
+/// Only names of upper case letters, digits and `_` count. A variable that is already set keeps its
+/// value.
 pub fn read_token_lines(text: &str, env: &mut EnvMap) {
     for line in text.lines() {
         let trimmed = line.trim();
@@ -127,11 +107,11 @@ pub fn read_token_lines(text: &str, env: &mut EnvMap) {
     }
 }
 
-/// @brief Reads the token file into the variables.
+/// Reads the token file into `env`.
 ///
-/// @param env The variables, changed in place.
-/// @return Where the file is, and if only its owner can read it.
-/// @throws TokensError The file exists, but cannot be read.
+/// # Errors
+///
+/// Returns an error when the file exists but cannot be read.
 pub fn load_token_env_file(env: &mut EnvMap) -> Result<LoadOutcome, TokensError> {
     apply_legacy_env(env);
     let Some(path) = default_token_file(env, Path::exists) else {
@@ -151,11 +131,7 @@ pub fn load_token_env_file(env: &mut EnvMap) -> Result<LoadOutcome, TokensError>
     Ok(LoadOutcome::Loaded { path, private })
 }
 
-/// @brief Gives the token of a client.
-///
-/// @param client_id The client name, for example `claude`.
-/// @param env The variables.
-/// @return `INBAND_<CLIENT>_TOKEN`, else `INBAND_TOKEN`, else `None`.
+/// Returns the token of a client: `INBAND_<CLIENT>_TOKEN`, else `INBAND_TOKEN`.
 #[must_use]
 pub fn client_token<'a>(client_id: &str, env: &'a EnvMap) -> Option<&'a str> {
     let scoped: String = client_id
@@ -177,7 +153,6 @@ pub fn client_token<'a>(client_id: &str, env: &'a EnvMap) -> Option<&'a str> {
 mod tests {
     use super::*;
 
-    /// @brief Makes a set of variables for a test.
     fn env(pairs: &[(&str, &str)]) -> EnvMap {
         pairs
             .iter()

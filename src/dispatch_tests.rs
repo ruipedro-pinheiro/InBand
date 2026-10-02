@@ -1,6 +1,3 @@
-//! @file dispatch_tests.rs
-//! @brief The tests of the real wakes, with a fake `codex` program and a fake `OpenCode` server.
-
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path as FsPath, PathBuf};
@@ -18,7 +15,6 @@ use crate::config::WakeCommon;
 
 const CODEX_SESSION: &str = "019f6767-789c-73b2-bc5c-ac8575f29efd";
 
-/// @brief Makes an empty directory for a test.
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("inband-dispatch-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -26,11 +22,8 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// @brief Makes a fake `codex` program.
-///
-/// @details It writes each argument on one line of `args.txt`, then runs `body`.
-///
-/// @return The program, and the path of `args.txt`.
+/// A fake `codex` program that writes each argument on one line of `args.txt`, then runs `body`.
+/// Returns the program and the path of `args.txt`.
 fn fake_codex(name: &str, body: &str) -> (PathBuf, PathBuf) {
     let dir = temp_dir(name);
     let log = dir.join("args.txt");
@@ -47,7 +40,6 @@ fn fake_codex(name: &str, body: &str) -> (PathBuf, PathBuf) {
     (script, log)
 }
 
-/// @brief Gives the common wake settings with this prompt.
 fn common(prompt: &str) -> WakeCommon {
     WakeCommon {
         prompt: prompt.to_owned(),
@@ -56,7 +48,6 @@ fn common(prompt: &str) -> WakeCommon {
     }
 }
 
-/// @brief Gives a Codex wake target for the fake program.
 fn codex_target(command: &FsPath, prompt: &str) -> WakeTarget {
     WakeTarget::Codex {
         command: command.display().to_string(),
@@ -65,7 +56,6 @@ fn codex_target(command: &FsPath, prompt: &str) -> WakeTarget {
     }
 }
 
-/// @brief Gives the input of a wake.
 fn input(session: Option<&str>, mailbox: &str, prompt: &str) -> WakeInput {
     WakeInput {
         recipient: mailbox.to_owned(),
@@ -75,9 +65,7 @@ fn input(session: Option<&str>, mailbox: &str, prompt: &str) -> WakeInput {
     }
 }
 
-/// @brief The Codex wake runs `codex queue` without a shell.
-///
-/// @details A shell would run a command substitution in the prompt. The argument list keeps it as text.
+/// A shell would run the command substitution in the prompt. The argument list keeps it as text.
 #[tokio::test]
 async fn codex_wake_runs_codex_queue_without_a_shell() {
     let (script, log) = fake_codex("ok", "exit 0");
@@ -162,7 +150,7 @@ async fn codex_wake_fails_cleanly_without_cli_or_session() {
     assert_eq!(no_session.disposition, WakeDisposition::Failed);
 }
 
-/// @brief A fake `OpenCode` server: it gives a list of sessions, and keeps the prompts that it receives.
+/// A fake `OpenCode` server: it lists sessions, and keeps the prompts that it receives.
 #[derive(Clone, Default)]
 struct FakeOpencode {
     prompts: Arc<Mutex<Vec<(String, Value)>>>,
@@ -170,12 +158,10 @@ struct FakeOpencode {
     fail: bool,
 }
 
-/// @brief Answers `GET /session`.
 async fn list_sessions(State(fake): State<FakeOpencode>) -> Json<Value> {
     Json(fake.sessions.clone())
 }
 
-/// @brief Answers `POST /session/<id>/prompt_async`, and keeps the session and the prompt.
 async fn prompt_async(
     State(fake): State<FakeOpencode>,
     Path(id): Path<String>,
@@ -192,7 +178,7 @@ async fn prompt_async(
     }
 }
 
-/// @brief Starts the fake server, and gives its URL.
+/// Starts the fake server, and returns its URL.
 async fn serve(fake: FakeOpencode) -> String {
     let router = Router::new()
         .route("/session", get(list_sessions))
@@ -204,7 +190,6 @@ async fn serve(fake: FakeOpencode) -> String {
     format!("http://{address}")
 }
 
-/// @brief Gives an `OpenCode` wake target for the fake server.
 fn opencode_target(base_url: &str) -> WakeTarget {
     WakeTarget::Opencode {
         base_url: base_url.to_owned(),

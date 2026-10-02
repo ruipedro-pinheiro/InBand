@@ -1,7 +1,7 @@
-//! @file lib.rs
-//! @brief InBand: a local message bus for coding agents.
+//! InBand: a local message bus for Claude Code, Codex and `OpenCode` sessions.
 //!
-//! @details One daemon carries mail between Claude Code, Codex and `OpenCode` sessions.
+//! One daemon carries mail between the sessions of one user, so that a lead session can give tasks
+//! to worker sessions and receive their results.
 
 pub mod auth;
 pub mod bridge;

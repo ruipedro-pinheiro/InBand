@@ -1,12 +1,12 @@
-//! @file sanitize.rs
-//! @brief Cleans the content of each message before the daemon stores it.
+//! Cleans the content of each message before the daemon stores it.
 //!
-//! @details Mail comes from agents. An agent can follow instructions that an attacker put in its input.
-//! The daemon thus removes two types of dangerous text:
-//! - text that hides content from the human: terminal escapes, bidi chars and zero-width chars;
-//! - text that imitates the `<channel>` tag. This tag carries the sender data that InBand guarantees.
+//! Mail comes from agents, and an agent can follow instructions that an attacker put in its input.
+//! The daemon thus removes two types of text:
+//!
+//! - text that hides content from the user: terminal escapes, bidi chars and zero-width chars;
+//! - text that imitates the `<channel>` tag, which carries the sender data that InBand guarantees.
 
-/// @brief The cleaned content, and what the cleaning changed.
+/// The cleaned content, and the counts of what the cleaning changed.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Sanitized {
     /// The content after the cleaning.
@@ -20,20 +20,21 @@ pub struct Sanitized {
 }
 
 impl Sanitized {
-    /// @brief Tells if the cleaning changed the content.
+    /// Returns `true` when the cleaning changed the content.
     #[must_use]
     pub fn changed(&self) -> bool {
         self.removed_escapes + self.removed_invisible + self.escaped_tags > 0
     }
 }
 
-/// @brief Tells if a char shows nothing, or changes the direction of the text near it.
+/// Returns `true` for a char that shows nothing, or that changes the direction of the text near it.
 ///
-/// @details The list contains:
+/// The list contains:
+///
 /// - the bidi embeddings, overrides, isolates and directional marks;
 /// - the zero-width chars, the word joiner, the invisible operators and the byte order mark;
 /// - the soft hyphen, the combining grapheme joiner, and the Mongolian, Khmer and Hangul fillers;
-/// - the variation selectors, the interlinear annotation chars, and the tag chars.
+/// - the variation selectors, the interlinear annotation chars and the tag chars.
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
@@ -45,15 +46,10 @@ fn is_invisible(c: char) -> bool {
     )
 }
 
-/// @brief Finds the end of one terminal escape sequence.
+/// Returns the length of the escape sequence that follows an `ESC` char.
 ///
-/// @details The supported sequences are:
-/// - CSI: `ESC [`, the parameters, then a final byte from 0x40 to 0x7E;
-/// - OSC, DCS, SOS, PM and APC: up to BEL or `ESC \`;
-/// - the other escapes: `ESC` and one more char.
-///
-/// @param chars The chars after `ESC`.
-/// @return The number of chars of the sequence after `ESC`.
+/// The sequences are CSI (`ESC [`, the parameters, then a final byte from 0x40 to 0x7E), the string
+/// sequences OSC, DCS, SOS, PM and APC (up to BEL or `ESC \`), and the two-char escapes.
 fn skip_escape(chars: &[char]) -> usize {
     match chars.first() {
         Some('[') => chars[1..]
@@ -78,11 +74,8 @@ fn skip_escape(chars: &[char]) -> usize {
     }
 }
 
-/// @brief Tells if the text starts with `<channel` or `</channel`.
-///
-/// @details The check ignores the case, and the spaces after `<` and `/`.
-///
-/// @param chars The text from a `<` char.
+/// Returns `true` when the text starts with `<channel` or `</channel`, in any case, with optional
+/// spaces after `<` and `/`.
 fn starts_channel_tag(chars: &[char]) -> bool {
     let skip_spaces = |mut index: usize| {
         while chars.get(index).is_some_and(|c| c.is_whitespace()) {
@@ -98,17 +91,11 @@ fn starts_channel_tag(chars: &[char]) -> bool {
     word.eq_ignore_ascii_case("channel")
 }
 
-/// @brief Cleans the content of a message.
+/// Removes the terminal escapes, the control chars (but not newline and tab) and the invisible
+/// chars. Then escapes the `<` of each channel tag.
 ///
-/// @details The function does two steps, in this order:
-/// 1. It removes the terminal escapes, the control chars (but not newline and tab) and the invisible chars.
-/// 2. It replaces the `<` of each channel tag with `&lt;`.
-///
-/// The order is important. A removed char can split a tag, for example `<` ESC `[0m` `channel`.
-/// The tag check must see the tag after the removal.
-///
-/// @param content The content from the agent.
-/// @return The cleaned content, and the number of removed and escaped chars.
+/// The removal comes first: a removed char can split a tag, for example `<` ESC `[0m` `channel`,
+/// and the tag check must see the tag whole.
 #[must_use]
 pub fn sanitize(content: &str) -> Sanitized {
     let chars: Vec<char> = content.chars().collect();
@@ -150,12 +137,9 @@ pub fn sanitize(content: &str) -> Sanitized {
     result
 }
 
-/// @brief Tells if the content contains one of the tokens.
+/// Returns `true` when the content contains one of `tokens`.
 ///
-/// @details The daemon refuses a message that contains a token. This stops an agent that sends a token to another agent.
-///
-/// @param content The content of the message.
-/// @param tokens The tokens of the configuration.
+/// The bus refuses such a message, so an agent cannot give a token to another agent.
 #[must_use]
 pub fn contains_token<'a>(content: &str, tokens: impl IntoIterator<Item = &'a str>) -> bool {
     tokens

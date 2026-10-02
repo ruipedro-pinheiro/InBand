@@ -1,10 +1,9 @@
-//! @file install.rs
-//! @brief The `inband install` command: it installs the daemon and connects each agent client of this machine.
+//! The `inband install` command: installs the daemon and connects each agent client of this
+//! machine.
 //!
-//! @details The installer is safe to run again. It also migrates a v1 install:
-//! - it removes the v1 hooks, MCP entries and commands;
-//! - it keeps a `.bak` copy of each configuration file before it changes it;
-//! - it does not change the files and hooks of the user.
+//! The installer is safe to run again, and migrates a v1 install: it removes the v1 hooks, MCP
+//! entries and commands, keeps a `.bak` copy of each configuration file before it changes it, and
+//! leaves the files and hooks of the user as they are.
 
 use std::fmt::Write as _;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -15,47 +14,41 @@ use serde_json::{Value, json};
 use crate::config::{EnvMap, load_bridge_config};
 use crate::tokens::{apply_legacy_env, read_token_lines};
 
-/// @brief The default `config.json`.
 const CONFIG_EXAMPLE: &str = include_str!("../assets/config.example.json");
-/// @brief The systemd user unit. `@BIN@` becomes the path of the binary.
+/// The systemd user unit. `@BIN@` becomes the path of the binary.
 const SERVICE_UNIT: &str = include_str!("../assets/inband.service");
-/// @brief The `OpenCode` plugin.
 const OPENCODE_PLUGIN: &str = include_str!("../assets/opencode/inband.js");
-/// @brief The names of the team commands.
 const TEAM_COMMANDS: [&str; 3] = ["lead", "join", "solo"];
-/// @brief The Claude Code command files, in the order of [`TEAM_COMMANDS`].
+/// The Claude Code commands, in the order of [`TEAM_COMMANDS`].
 const CLAUDE_COMMANDS: [&str; 3] = [
     include_str!("../assets/claude/commands/lead.md"),
     include_str!("../assets/claude/commands/join.md"),
     include_str!("../assets/claude/commands/solo.md"),
 ];
-/// @brief The `OpenCode` command files, in the order of [`TEAM_COMMANDS`].
+/// The `OpenCode` commands, in the order of [`TEAM_COMMANDS`].
 const OPENCODE_COMMANDS: [&str; 3] = [
     include_str!("../assets/opencode/command/lead.md"),
     include_str!("../assets/opencode/command/join.md"),
     include_str!("../assets/opencode/command/solo.md"),
 ];
-/// @brief The Codex skill files, in the order of [`TEAM_COMMANDS`].
+/// The Codex skills, in the order of [`TEAM_COMMANDS`].
 const CODEX_SKILLS: [&str; 3] = [
     include_str!("../assets/codex/skills/lead/SKILL.md"),
     include_str!("../assets/codex/skills/join/SKILL.md"),
     include_str!("../assets/codex/skills/solo/SKILL.md"),
 ];
-/// @brief The variables of `tokens.env`: one token for each client.
 const TOKEN_VARS: [&str; 4] = [
     "INBAND_ADMIN_TOKEN",
     "INBAND_CLAUDE_TOKEN",
     "INBAND_CODEX_TOKEN",
     "INBAND_OPENCODE_TOKEN",
 ];
-/// @brief A text that only the files of InBand contain. A file without it belongs to the user.
+/// A text that only the files of InBand contain. A file without it belongs to the user.
 const OURS_MARKER: &str = "InBand";
-/// @brief A text that only the v1 command files contain: the name of the v1 tool `claim_lead`.
+/// A text that only the v1 command files contain: the name of the v1 tool `claim_lead`.
 const V1_MARKER: &str = "claim_lead";
-/// @brief The default port of the daemon.
 const DEFAULT_PORT: u64 = 7447;
 
-/// @brief The reasons why the installer stops.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
     #[error("no home directory: set HOME")]
@@ -74,7 +67,6 @@ pub enum InstallError {
     Invalid(String),
 }
 
-/// @brief Makes an error that names the file.
 fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
     move |source| InstallError::Io {
         path: path.to_owned(),
@@ -82,25 +74,21 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
     }
 }
 
-/// @brief Finds and runs the programs of the clients: `claude`, `codex`, `systemctl`.
-///
-/// @details The tests replace it, so they run no real program.
+/// Finds and runs the programs of the clients: `claude`, `codex`, `systemctl`. The tests replace
+/// it.
 pub trait Runner {
-    /// @brief Gives the path of a program in `PATH`, or `None`.
+    /// Returns the path of a program on `PATH`.
     fn find(&self, program: &str) -> Option<PathBuf>;
-    /// @brief Runs a program.
-    ///
-    /// @return True when the program succeeds, and its output.
+    /// Runs a program, and returns whether it succeeded, with its output.
     fn run(&self, program: &Path, args: &[&str]) -> (bool, String);
 }
 
-/// @brief Finds and runs the real programs of this machine.
+/// The real programs of this machine.
 pub struct SystemRunner {
     pub path: Option<String>,
 }
 
 impl Runner for SystemRunner {
-    /// @brief Finds an executable file in `PATH`.
     fn find(&self, program: &str) -> Option<PathBuf> {
         std::env::split_paths(self.path.as_deref()?)
             .map(|dir| dir.join(program))
@@ -111,7 +99,7 @@ impl Runner for SystemRunner {
             })
     }
 
-    /// @brief Runs a program without a shell, with an empty input.
+    /// Runs the program without a shell, with an empty input.
     fn run(&self, program: &Path, args: &[&str]) -> (bool, String) {
         match std::process::Command::new(program)
             .args(args)
@@ -128,7 +116,6 @@ impl Runner for SystemRunner {
     }
 }
 
-/// @brief Where and how to install.
 pub struct InstallOptions {
     pub home: PathBuf,
     /// The binary to install, usually the running one.
@@ -139,7 +126,7 @@ pub struct InstallOptions {
     pub env: EnvMap,
 }
 
-/// @brief What the installer did, step by step, for the user.
+/// What the installer did, step by step, and what the user must still do.
 #[derive(Default)]
 pub struct Report {
     pub lines: Vec<String>,
@@ -152,29 +139,24 @@ pub struct Report {
 }
 
 impl Report {
-    /// @brief Starts a new step of the report.
     fn step(&mut self, title: &str) {
         self.lines.push(format!("\n== {title}"));
     }
 
-    /// @brief Adds a line to the current step.
     fn say(&mut self, line: impl Into<String>) {
         self.lines.push(format!("  {}", line.into()));
     }
 }
 
-/// @brief Installs InBand for the user of `options.home`.
+/// Installs InBand for the user of `options.home`.
 ///
-/// @details The steps are:
-/// 1. the binary in `~/.local/bin`;
-/// 2. `tokens.env` and `config.json`, or a check of the tokens on a machine without a daemon;
-/// 3. Claude Code, Codex and `OpenCode`, when they are on this machine;
-/// 4. the systemd user service.
+/// The steps are: the binary in `~/.local/bin`; `tokens.env` and `config.json` (or, on a machine
+/// without a daemon, a check of the tokens); Claude Code, Codex and `OpenCode` when they are on
+/// this machine; the systemd user service.
 ///
-/// @param options Where and how to install.
-/// @param runner Finds and runs the programs of the clients.
-/// @return The report.
-/// @throws InstallError A file cannot be read or written, or the configuration is not valid.
+/// # Errors
+///
+/// Returns an error when a file cannot be read or written, or when the configuration is not valid.
 pub fn install(options: &InstallOptions, runner: &dyn Runner) -> Result<Report, InstallError> {
     let mut report = Report::default();
     let home = &options.home;
@@ -246,14 +228,12 @@ pub fn install(options: &InstallOptions, runner: &dyn Runner) -> Result<Report, 
     Ok(report)
 }
 
-/// @brief Tells if a client is on this machine: its configuration directory or its program exists.
-///
-/// @details Some clients create their directory only when they start for the first time.
+/// Returns `true` when the configuration directory or the program of a client exists. Some clients
+/// create their directory only at their first start.
 fn client_present(dir: &Path, program: &str, runner: &dyn Runner) -> bool {
     dir.is_dir() || runner.find(program).is_some()
 }
 
-/// @brief Creates a directory that only its owner can open.
 fn create_private_dir(dir: &Path) -> Result<(), InstallError> {
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -262,14 +242,12 @@ fn create_private_dir(dir: &Path) -> Result<(), InstallError> {
         .map_err(io_error(dir))
 }
 
-/// @brief Creates a directory and its parents.
 fn create_dir(dir: &Path) -> Result<(), InstallError> {
     std::fs::create_dir_all(dir).map_err(io_error(dir))
 }
 
-/// @brief Writes a file through a temporary file.
-///
-/// @details A crash thus never leaves half a file. The file keeps its permissions, unless `mode` gives others.
+/// Writes a file through a temporary file, so a crash never leaves half a file. The file keeps its
+/// permissions, unless `mode` gives others.
 fn write_file(path: &Path, text: &str, mode: Option<u32>) -> Result<(), InstallError> {
     let mode = mode.or_else(|| {
         std::fs::metadata(path)
@@ -285,7 +263,7 @@ fn write_file(path: &Path, text: &str, mode: Option<u32>) -> Result<(), InstallE
     std::fs::rename(&temporary, path).map_err(io_error(path))
 }
 
-/// @brief Reads a file. A file that does not exist gives `None`.
+/// Reads a file, or returns `None` when it does not exist.
 fn read_optional(path: &Path) -> Result<Option<String>, InstallError> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -297,10 +275,8 @@ fn read_optional(path: &Path) -> Result<Option<String>, InstallError> {
     }
 }
 
-/// @brief Reads a file that contains a JSON object.
-///
-/// @return The text of the file, or `None`, and the object. A file that does not exist gives an empty object.
-/// @throws InstallError The file is not JSON, or does not contain an object.
+/// Reads a file that contains a JSON object, and returns its text with the object. A missing file
+/// gives no text and an empty object.
 fn read_json(path: &Path) -> Result<(Option<String>, Value), InstallError> {
     let Some(text) = read_optional(path)? else {
         return Ok((None, json!({})));
@@ -322,11 +298,8 @@ fn read_json(path: &Path) -> Result<(Option<String>, Value), InstallError> {
     Ok((Some(text), value))
 }
 
-/// @brief Writes a JSON object when it changed.
-///
-/// @details Before the write, the previous file goes to a `.bak` copy.
-///
-/// @return True when the file changed.
+/// Writes a JSON object when it changed, after a `.bak` copy of the previous file. Returns `true`
+/// when the file changed.
 fn write_json(path: &Path, before: Option<&str>, value: &Value) -> Result<bool, InstallError> {
     let text = format!(
         "{}\n",
@@ -346,10 +319,8 @@ fn write_json(path: &Path, before: Option<&str>, value: &Value) -> Result<bool, 
     Ok(true)
 }
 
-/// @brief Copies the binary to `~/.local/bin/inband`.
-///
-/// @details The copy goes to a temporary file, then replaces the old file.
-/// The daemons and shims that run thus keep the old file.
+/// Copies the binary to `~/.local/bin/inband` through a temporary file, so the running daemons and
+/// shims keep the old file.
 fn install_binary(source: &Path, home: &Path) -> Result<PathBuf, InstallError> {
     let directory = home.join(".local/bin");
     create_dir(&directory)?;
@@ -365,7 +336,7 @@ fn install_binary(source: &Path, home: &Path) -> Result<PathBuf, InstallError> {
     Ok(target)
 }
 
-/// @brief Reads the tokens of a `tokens.env` text, with the names before the rename.
+/// Reads the tokens of a `tokens.env` text, the pre-rename names included.
 fn token_env(text: &str) -> EnvMap {
     let mut env = EnvMap::new();
     read_token_lines(text, &mut env);
@@ -373,12 +344,11 @@ fn token_env(text: &str) -> EnvMap {
     env
 }
 
-/// @brief Makes a random token of 64 hex chars.
 fn random_token() -> String {
     hex::encode(rand::random::<[u8; 32]>())
 }
 
-/// @brief Adds the missing tokens to `tokens.env`, with mode 600. The other lines stay.
+/// Adds the missing tokens to `tokens.env`, with mode 600. The other lines stay.
 fn write_tokens(data: &Path, report: &mut Report) -> Result<(), InstallError> {
     let path = data.join("tokens.env");
     let mut text = read_optional(&path)?.unwrap_or_default();
@@ -403,11 +373,8 @@ fn write_tokens(data: &Path, report: &mut Report) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// @brief Makes sure that a machine without a daemon has the token of at least one client.
-///
-/// @details The tokens must come from the machine of the daemon. New tokens would not match.
-///
-/// @throws InstallError There is no client token.
+/// Makes sure that a machine without a daemon has at least one client token. The tokens must come
+/// from the daemon host: new tokens would not match.
 fn check_client_tokens(data: &Path) -> Result<(), InstallError> {
     let path = data.join("tokens.env");
     let text = read_optional(&path)?.unwrap_or_default();
@@ -426,15 +393,13 @@ fn check_client_tokens(data: &Path) -> Result<(), InstallError> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(io_error(&path))
 }
 
-/// @brief Updates a v1 configuration.
+/// Updates a v1 configuration, and returns one line for each change:
 ///
-/// @details The changes are:
-/// - the `routing` option goes away, because the teams replace the mesh mode;
+/// - `routing` goes away: the teams replace the mesh mode;
 /// - the missing clients come from the example;
-/// - the `OpenCode` token also covers `opencode-<session>`: v1 had one `OpenCode` mailbox, v2 has one for each session;
-/// - the v1 `OpenCode` wake prompt, which names the fixed `opencode` mailbox, becomes the v2 prompt.
-///
-/// @return One line for each change.
+/// - the `OpenCode` token also covers `opencode-<session>`, because each session now has a mailbox;
+/// - the v1 `OpenCode` wake prompt, which names the fixed `opencode` mailbox, becomes the v2
+///   prompt.
 fn migrate_config(config: &mut Value) -> Vec<String> {
     let example: Value = serde_json::from_str(CONFIG_EXAMPLE).unwrap_or_default();
     let mut changes = Vec::new();
@@ -489,12 +454,8 @@ fn migrate_config(config: &mut Value) -> Vec<String> {
     changes
 }
 
-/// @brief Writes or updates `config.json`.
-///
-/// @details The installer checks the result with the loader of the daemon. It never writes a configuration that is not valid.
-///
-/// @return The port of the daemon.
-/// @throws InstallError The file cannot be read or written, or the result is not valid.
+/// Writes or updates `config.json`, and returns the port of the daemon. The installer checks the
+/// result with the loader of the daemon, so it never writes a configuration that is not valid.
 fn write_config(
     data: &Path,
     runner: &dyn Runner,
@@ -531,19 +492,15 @@ fn write_config(
     Ok(u64::from(parsed.port))
 }
 
-/// @brief Writes a path as one shell word.
+/// Returns a path as one shell word.
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
 
-/// @brief Replaces the hooks of InBand and keeps all the other hooks.
+/// Replaces the hooks of InBand in the hook settings of a client, and keeps all other hooks.
 ///
-/// @details The function removes the hooks that `is_ours` accepts. Then it adds one group for each event.
-///
-/// @param settings The hook settings of a client.
-/// @param events The event names and the hooks to add.
-/// @param is_ours Tells if a hook command belongs to InBand, v1 included.
-/// @return The number of removed hooks.
+/// The function removes the hooks that `is_ours` accepts (v1 included), then adds one group for
+/// each event. Returns the number of removed hooks.
 fn set_hooks(
     settings: &mut Value,
     events: &[(&str, Value)],
@@ -584,7 +541,7 @@ fn set_hooks(
     removed
 }
 
-/// @brief Writes a file of InBand, unless the user put another file at this path.
+/// Writes a file of InBand, unless the user put another file at this path.
 fn write_owned(path: &Path, text: &str, report: &mut Report) -> Result<(), InstallError> {
     if let Some(existing) = read_optional(path)?
         && existing != text
@@ -600,7 +557,7 @@ fn write_owned(path: &Path, text: &str, report: &mut Report) -> Result<(), Insta
     write_file(path, text, None)
 }
 
-/// @brief Removes a file when it is a v1 file of InBand.
+/// Removes a file when it is a v1 file of InBand.
 fn remove_v1(path: &Path, report: &mut Report) -> Result<(), InstallError> {
     if read_optional(path)?.is_some_and(|text| text.contains(V1_MARKER)) {
         std::fs::remove_file(path).map_err(io_error(path))?;
@@ -609,7 +566,6 @@ fn remove_v1(path: &Path, report: &mut Report) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// @brief Tells if a Claude Code hook command belongs to InBand, v1 included.
 fn is_claude_hook(command: &str) -> bool {
     [
         "inband-name.sh",
@@ -622,10 +578,8 @@ fn is_claude_hook(command: &str) -> bool {
         || command.ends_with(" hook claude")
 }
 
-/// @brief Connects Claude Code.
-///
-/// @details The function writes the hooks and the commands. It then replaces the v1 MCP servers with the shim.
-/// v1 used an HTTP server and a separate channel server. The shim does the work of both.
+/// Writes the Claude Code hooks and commands, and replaces the v1 MCP servers with the shim. v1
+/// used an HTTP server and a separate channel server; the shim does the work of both.
 fn install_claude(
     dir: &Path,
     binary: &Path,
@@ -697,16 +651,14 @@ fn install_claude(
     Ok(())
 }
 
-/// @brief Tells if a Codex hook command belongs to InBand, v1 included.
 fn is_codex_hook(command: &str) -> bool {
     command.contains("codex-hook.ts") || command.ends_with(" hook codex")
 }
 
-/// @brief Connects Codex.
+/// Writes the Codex hooks and skills, and adds the shim as a stdio MCP server.
 ///
-/// @details The function writes the hooks and the skills, then adds the shim as a stdio MCP server.
-/// v1 used an HTTP server with a token in the environment.
-/// The shim reads the token file itself, so Codex needs no token in its environment.
+/// v1 used an HTTP server with the token in the environment. The shim reads the token file itself,
+/// so Codex needs no token in its environment.
 fn install_codex(
     dir: &Path,
     binary: &Path,
@@ -768,10 +720,10 @@ fn install_codex(
     Ok(())
 }
 
-/// @brief Lets Codex call the InBand tools without a confirmation prompt.
+/// Lets Codex call the InBand tools without a confirmation prompt.
 ///
-/// @details A wake can start a Codex session in the background. Nobody can then confirm a call, and the session would never read its mail.
-/// The daemon checks the session of each call, whatever the approval.
+/// A wake can start a Codex session in the background, where nobody can confirm a call: the session
+/// would never read its mail. The daemon checks the session of each call, whatever the approval.
 fn approve_codex_tools(path: &Path, report: &mut Report) -> Result<(), InstallError> {
     const TABLE: &str = "[mcp_servers.inband]";
     const APPROVE: &str = "default_tools_approval_mode = \"approve\"";
@@ -800,11 +752,11 @@ fn approve_codex_tools(path: &Path, report: &mut Report) -> Result<(), InstallEr
     Ok(())
 }
 
-/// @brief Connects `OpenCode`.
+/// Writes the `OpenCode` plugin, with the path of the binary in it, and the commands. Then removes
+/// the v1 `inband` MCP server, because the plugin gives the same tools.
 ///
-/// @details The function writes the plugin, with the path of the binary in it, and the commands.
-/// It then removes the v1 `inband` MCP server, because the plugin gives the same tools.
-/// `opencode mcp add` writes `opencode.jsonc`. A rewrite of a file with comments would lose them, so the user removes the entry in such a file.
+/// `opencode mcp add` writes `opencode.jsonc`. A rewrite would lose the comments of such a file, so
+/// the user removes the entry there.
 fn install_opencode(dir: &Path, binary: &Path, report: &mut Report) -> Result<(), InstallError> {
     let default_bin = "process.env.INBAND_BIN || \"inband\"";
     let baked = format!(
@@ -851,9 +803,8 @@ fn install_opencode(dir: &Path, binary: &Path, report: &mut Report) -> Result<()
     Ok(())
 }
 
-/// @brief Installs and starts the systemd user service.
-///
-/// @details The function also stops and removes the old `agent-bridge` service, which uses the same port.
+/// Installs and starts the systemd user service. The old `agent-bridge` service uses the same port,
+/// so the function stops and removes it.
 fn install_service(
     config_home: &Path,
     binary: &Path,

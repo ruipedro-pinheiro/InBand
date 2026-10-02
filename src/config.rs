@@ -1,9 +1,8 @@
-//! @file config.rs
-//! @brief Reads and checks `config.json`.
+//! Reads and checks `config.json`.
 //!
-//! @details The daemon refuses a configuration with one value that is not valid.
-//! The error gives the path of that value, for example `wake.codex.command`.
-//! The module also contains the loopback rules: by default, the daemon and its URLs stay on this machine.
+//! The daemon refuses a configuration with one value that is not valid, and the error names the
+//! path of that value, for example `wake.codex.command`. By default, the daemon and the URLs that
+//! it calls stay on this machine.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -11,19 +10,14 @@ use std::fmt;
 use serde_json::{Map, Value};
 use url::{Host, Url};
 
-/// @brief The environment variables of the process.
-///
-/// @details The functions take this map, not the real environment, so that the tests can give their own values.
+/// The environment variables, as a map: the tests give their own values.
 pub type EnvMap = HashMap<String, String>;
 
-/// @brief The maximum length of a mailbox name or a client name.
 const MAX_NAME_LEN: usize = 64;
-/// @brief The maximum size of a wake prompt.
 const MAX_PROMPT_BYTES: usize = 16_384;
-/// @brief The maximum number of retries of a Codex wake.
 const MAX_RETRY_DELAYS: usize = 16;
 
-/// @brief The configuration of the daemon.
+/// The configuration of the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeConfig {
     pub port: u16,
@@ -35,7 +29,6 @@ pub struct BridgeConfig {
     pub wake: BTreeMap<String, WakeTarget>,
 }
 
-/// @brief The authentication settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthConfig {
     /// False only when the file sets `"required": false`.
@@ -44,7 +37,7 @@ pub struct AuthConfig {
     pub clients: BTreeMap<String, AuthClientConfig>,
 }
 
-/// @brief The settings of one client, for example `claude`.
+/// The settings of one client, for example `claude`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthClientConfig {
     /// The token, written in the file.
@@ -59,7 +52,7 @@ pub struct AuthClientConfig {
     pub admin: bool,
 }
 
-/// @brief The settings that all wake targets have.
+/// The settings of all wake targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeCommon {
     /// The text of the wake. `{mailbox}` becomes the mailbox name.
@@ -70,7 +63,7 @@ pub struct WakeCommon {
     pub max_wakes_per_hour: u32,
 }
 
-/// @brief A client that the daemon can wake.
+/// A client that the daemon can wake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WakeTarget {
     /// An `OpenCode` server. The daemon sends the wake to its HTTP API.
@@ -87,7 +80,6 @@ pub enum WakeTarget {
 }
 
 impl WakeTarget {
-    /// @brief Gives the settings that all wake targets have.
     #[must_use]
     pub fn common(&self) -> &WakeCommon {
         match self {
@@ -96,7 +88,7 @@ impl WakeTarget {
     }
 }
 
-/// @brief What is wrong with a configuration value.
+/// What is wrong with a configuration value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Problem {
     NotObject,
@@ -117,7 +109,6 @@ pub enum Problem {
 }
 
 impl fmt::Display for Problem {
-    /// @brief Writes the problem as a short English text.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotObject => write!(f, "must be an object"),
@@ -148,7 +139,6 @@ impl fmt::Display for Problem {
     }
 }
 
-/// @brief The errors of the configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("config is not valid JSON: {0}")]
@@ -157,7 +147,6 @@ pub enum ConfigError {
     Invalid { path: String, problem: Problem },
 }
 
-/// @brief Makes the error for one value that is not valid.
 fn invalid(path: impl Into<String>, problem: Problem) -> ConfigError {
     ConfigError::Invalid {
         path: path.into(),
@@ -165,15 +154,13 @@ fn invalid(path: impl Into<String>, problem: Problem) -> ConfigError {
     }
 }
 
-/// @brief Tells if an `INBAND_UNSAFE_*` variable is `1`, `true` or `yes`.
+/// Returns `true` when the variable is `1`, `true` or `yes`.
 fn unsafe_enabled(env: &EnvMap, name: &str) -> bool {
     env.get(name)
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
-/// @brief Tells if a name is a valid mailbox name or client name.
-///
-/// @return True for 1 to 64 chars of `[a-z0-9_-]`.
+/// Returns `true` for a mailbox or client name: 1 to 64 chars of `[a-z0-9_-]`.
 #[must_use]
 pub fn is_agent_name(name: &str) -> bool {
     !name.is_empty()
@@ -183,26 +170,23 @@ pub fn is_agent_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// @brief Tells if a pattern is valid.
-///
-/// @return True for `*`, for a name, and for a name that ends with `*`.
+/// Returns `true` for `*`, a name, or a name followed by `*`.
 #[must_use]
 pub fn is_agent_pattern(pattern: &str) -> bool {
     pattern == "*" || is_agent_name(pattern.strip_suffix('*').unwrap_or(pattern))
 }
 
-/// @brief Tells if an address is on the loopback interface only.
 #[must_use]
 pub fn is_loopback_bind_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
-/// @brief Gives the address where the daemon listens.
+/// Returns the listen address of the daemon: `INBAND_BIND`, else `127.0.0.1`.
 ///
-/// @details The address comes from `INBAND_BIND`. The default is `127.0.0.1`.
-/// An address that other machines can reach needs `INBAND_UNSAFE_REMOTE_BIND=1`.
+/// # Errors
 ///
-/// @throws ConfigError The address is not loopback, and the unsafe flag is not set.
+/// Returns an error for an address that other machines can reach, unless
+/// `INBAND_UNSAFE_REMOTE_BIND=1`.
 pub fn resolve_bind_host(env: &EnvMap) -> Result<String, ConfigError> {
     let host = env
         .get("INBAND_BIND")
@@ -220,7 +204,6 @@ pub fn resolve_bind_host(env: &EnvMap) -> Result<String, ConfigError> {
     ))
 }
 
-/// @brief Tells if the host of a URL is this machine.
 fn is_loopback_url_host(url: &Url) -> bool {
     match url.host() {
         Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
@@ -230,14 +213,12 @@ fn is_loopback_url_host(url: &Url) -> bool {
     }
 }
 
-/// @brief Checks an http base URL and removes its trailing `/`, query and fragment.
+/// Returns an http base URL without trailing `/`, query and fragment.
 ///
-/// @details The URL must point to this machine, unless `INBAND_UNSAFE_REMOTE_URLS=1`.
+/// # Errors
 ///
-/// @param raw The URL from the configuration or the environment.
-/// @param env The environment variables.
-/// @return The base URL.
-/// @throws ConfigError The URL is not valid, does not use http, or points to another machine.
+/// Returns an error when the URL is not valid, does not use http, or points to another machine
+/// (unless `INBAND_UNSAFE_REMOTE_URLS=1`).
 pub fn normalize_loopback_http_base_url(raw: &str, env: &EnvMap) -> Result<String, ConfigError> {
     let path = format!("URL \"{raw}\"");
     let mut url = Url::parse(raw.trim()).map_err(|_| invalid(&path, Problem::InvalidUrl))?;
@@ -259,27 +240,18 @@ pub fn normalize_loopback_http_base_url(raw: &str, env: &EnvMap) -> Result<Strin
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-/// @brief Reads a JSON object.
-///
-/// @throws ConfigError The value is not an object.
 fn object<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>, ConfigError> {
     value
         .as_object()
         .ok_or_else(|| invalid(path, Problem::NotObject))
 }
 
-/// @brief Reads a JSON string.
-///
-/// @throws ConfigError The value is missing, or is not a string.
 fn string<'a>(value: Option<&'a Value>, path: &str) -> Result<&'a str, ConfigError> {
     value
         .and_then(Value::as_str)
         .ok_or_else(|| invalid(path, Problem::NotString))
 }
 
-/// @brief Reads an integer in a range.
-///
-/// @throws ConfigError The value is missing, or is not an integer from `min` to `max`.
 fn integer(value: Option<&Value>, path: &str, min: u64, max: u64) -> Result<u64, ConfigError> {
     value
         .and_then(Value::as_u64)
@@ -287,17 +259,13 @@ fn integer(value: Option<&Value>, path: &str, min: u64, max: u64) -> Result<u64,
         .ok_or_else(|| invalid(path, Problem::IntegerOutOfRange { min, max }))
 }
 
-/// @brief Reads an integer from 1 to 3600.
-///
-/// @throws ConfigError The value is missing, or is out of range.
+/// Reads an integer from 1 to 3600.
 fn small_integer(value: Option<&Value>, path: &str) -> Result<u32, ConfigError> {
     let n = integer(value, path, 1, 3600)?;
     u32::try_from(n).map_err(|_| invalid(path, Problem::IntegerOutOfRange { min: 1, max: 3600 }))
 }
 
-/// @brief Reads a wake prompt.
-///
-/// @throws ConfigError The prompt is empty, or is larger than 16 KiB.
+/// Reads a wake prompt: not empty, 16 KiB at most.
 fn prompt(value: Option<&Value>, path: &str) -> Result<String, ConfigError> {
     let text = string(value, path)?;
     if text.trim().is_empty() {
@@ -309,13 +277,10 @@ fn prompt(value: Option<&Value>, path: &str) -> Result<String, ConfigError> {
     Ok(text.to_owned())
 }
 
-/// @brief Reads the path or the name of an executable.
+/// Reads the path or the name of an executable.
 ///
-/// @details The daemon runs the executable without a shell.
-/// The value can thus contain only letters, digits, `_`, `.`, `/` and `-`.
-/// A shell command, such as `codex; rm -rf ~`, is refused.
-///
-/// @throws ConfigError The value is empty, or contains other chars.
+/// The daemon runs it without a shell, so the value can contain only letters, digits, `_`, `.`, `/`
+/// and `-`. A shell command such as `codex; rm -rf ~` is refused.
 fn command(value: Option<&Value>, path: &str) -> Result<String, ConfigError> {
     let text = string(value, path)?.trim();
     if text.is_empty() {
@@ -328,13 +293,7 @@ fn command(value: Option<&Value>, path: &str) -> Result<String, ConfigError> {
     Ok(text.to_owned())
 }
 
-/// @brief Reads one entry of `wake`.
-///
-/// @param name The name of the entry, for the error paths.
-/// @param value The JSON value of the entry.
-/// @param env The environment variables, for the URL rules.
-/// @return The wake target.
-/// @throws ConfigError A value of the entry is missing or not valid.
+/// Reads one entry of `wake`. `name` is the key of the entry, for the error paths.
 fn wake_target(name: &str, value: &Value, env: &EnvMap) -> Result<WakeTarget, ConfigError> {
     let path = format!("wake.{name}");
     let fields = object(value, &path)?;
@@ -392,11 +351,7 @@ fn wake_target(name: &str, value: &Value, env: &EnvMap) -> Result<WakeTarget, Co
     }
 }
 
-/// @brief Reads a list of mailbox patterns.
-///
-/// @details The patterns are changed to lower case.
-///
-/// @throws ConfigError The list is empty, or one pattern is not valid.
+/// Reads a list of mailbox patterns, in lower case. An empty list is refused.
 fn patterns(value: &Value, path: &str) -> Result<Vec<String>, ConfigError> {
     let items = value.as_array().filter(|items| !items.is_empty());
     let items = items.ok_or_else(|| invalid(path, Problem::NotArray))?;
@@ -417,13 +372,10 @@ fn patterns(value: &Value, path: &str) -> Result<Vec<String>, ConfigError> {
         .collect()
 }
 
-/// @brief Reads the `auth` object.
+/// Reads the `auth` object, or returns `None` when there is none.
 ///
-/// @details Each client needs a token, either in `token` or through `tokenEnv`.
-/// Authentication stays on unless `required` is exactly `false`.
-///
-/// @return The settings, or `None` when there is no `auth` object.
-/// @throws ConfigError A client has a name, a pattern or a token that is not valid.
+/// Each client needs a token, in `token` or through `tokenEnv`. Authentication stays on unless
+/// `required` is exactly `false`.
 fn auth_config(value: Option<&Value>) -> Result<Option<AuthConfig>, ConfigError> {
     let Some(value) = value else {
         return Ok(None);
@@ -483,12 +435,11 @@ fn auth_config(value: Option<&Value>) -> Result<Option<AuthConfig>, ConfigError>
     Ok(Some(AuthConfig { required, clients }))
 }
 
-/// @brief Reads and checks the text of `config.json`.
+/// Reads and checks the text of `config.json`.
 ///
-/// @param raw The text of the file.
-/// @param env The environment variables.
-/// @return The configuration.
-/// @throws ConfigError The text is not JSON, or one value is not valid. The error gives the first such value.
+/// # Errors
+///
+/// Returns an error when the text is not JSON, or for the first value that is not valid.
 pub fn load_bridge_config(raw: &str, env: &EnvMap) -> Result<BridgeConfig, ConfigError> {
     let parsed: Value = serde_json::from_str(raw)?;
     let fields = object(&parsed, "config")?;
@@ -540,7 +491,6 @@ pub fn load_bridge_config(raw: &str, env: &EnvMap) -> Result<BridgeConfig, Confi
 mod tests {
     use super::*;
 
-    /// @brief Makes a set of variables for a test.
     fn env(pairs: &[(&str, &str)]) -> EnvMap {
         pairs
             .iter()
@@ -548,7 +498,6 @@ mod tests {
             .collect()
     }
 
-    /// @brief Gives the error text of a configuration that must be refused.
     fn error_text(result: Result<BridgeConfig, ConfigError>) -> String {
         result.expect_err("config should be rejected").to_string()
     }
@@ -610,7 +559,6 @@ mod tests {
         assert!(normalize_loopback_http_base_url("http://bridge.example.test", &allowed).is_ok());
     }
 
-    /// @brief A valid configuration for the tests.
     const VALID: &str = r#"{
       "port": 7447,
       "maxMessageBytes": 65536,

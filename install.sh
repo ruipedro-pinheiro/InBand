@@ -1,19 +1,12 @@
 #!/bin/sh
-## @file install.sh
-## @brief Installs InBand on this machine.
-##
-## @details The script gets the `inband` binary, then runs `inband install`.
-## That command installs the daemon and connects Claude Code, Codex and OpenCode.
-## The script is safe to run again, and it migrates a v1 install.
-##
-## From a checkout with cargo, the script builds the binary.
-## Without cargo, it downloads the static binary of the latest release and checks its SHA-256.
+# Installs InBand: gets the inband binary, then runs `inband install`, which installs the daemon
+# and connects Claude Code, Codex and OpenCode. From a checkout with cargo, the binary is built;
+# else the static binary of the latest release is downloaded and its SHA-256 checked.
 set -eu
 
 REPO="ruipedro-pinheiro/InBand"
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-## @brief Prints the usage.
 usage() {
   cat <<'EOF'
 usage: ./install.sh [--client] [--no-service]
@@ -29,7 +22,7 @@ of the latest release and checks its SHA-256.
 EOF
 }
 
-## @brief Gives the release name of this machine: x86_64 or aarch64.
+# The architecture name of the release archives: x86_64 or aarch64.
 release_arch() {
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) echo x86_64 ;;
@@ -39,8 +32,7 @@ release_arch() {
   esac
 }
 
-## @brief Downloads the binary of the latest release into a directory, and checks its SHA-256.
-## @param $1 The directory.
+# Downloads the binary of the latest release into the directory $1, and checks its SHA-256.
 download() {
   dir=$1
   arch=$(release_arch)

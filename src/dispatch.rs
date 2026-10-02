@@ -1,8 +1,6 @@
-//! @file dispatch.rs
-//! @brief The wakes that go to the real clients.
+//! Wakes for the real clients: `codex queue` for Codex, and the HTTP API of the local server for
+//! `OpenCode`.
 //!
-//! @details Codex receives a wake through its CLI: `codex queue`.
-//! `OpenCode` receives a wake through the HTTP API of its local server.
 //! A wake prompt comes from the configuration. It never contains message content.
 
 use std::process::Stdio;
@@ -16,31 +14,33 @@ use crate::config::WakeTarget;
 use crate::opencode_session;
 use crate::wake::{WakeDispatch, WakeDisposition, WakeFuture, WakeInput, WakeResult};
 
-/// @brief The maximum time of one wake attempt.
 const WAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// @brief The maximum length of the client output in a wake result.
 const MAX_DETAIL_CHARS: usize = 4096;
 
-/// @brief Wakes Codex through its CLI, and `OpenCode` through its local server.
+/// Wakes Codex through its CLI, and `OpenCode` through its local server.
 pub struct RealWake {
     http: reqwest::Client,
     timeout: Duration,
 }
 
 impl RealWake {
-    /// @brief Makes the dispatcher with the default timeout.
+    /// Creates the dispatcher with the default timeout.
     ///
-    /// @throws reqwest::Error The HTTP client cannot be made.
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be created.
     pub fn new() -> Result<Self, reqwest::Error> {
         Self::with_timeout(WAKE_TIMEOUT)
     }
 
-    /// @brief Makes the dispatcher with a given timeout.
+    /// Creates the dispatcher with a given timeout.
     ///
-    /// @details The HTTP client does not use a system proxy, and does not follow redirects.
-    /// The wake URLs point to this machine, so a proxy must never receive these requests.
+    /// The HTTP client uses no system proxy and follows no redirect: the wake URLs point to this
+    /// machine, and a proxy must never receive these requests.
     ///
-    /// @throws reqwest::Error The HTTP client cannot be made.
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be created.
     pub fn with_timeout(timeout: Duration) -> Result<Self, reqwest::Error> {
         let http = reqwest::Client::builder()
             .no_proxy()
@@ -52,7 +52,6 @@ impl RealWake {
 }
 
 impl WakeDispatch for RealWake {
-    /// @brief Sends one wake to the client of the target.
     fn dispatch(&self, target: &WakeTarget, input: WakeInput) -> WakeFuture {
         match target {
             WakeTarget::Codex { command, .. } => {
@@ -65,10 +64,7 @@ impl WakeDispatch for RealWake {
     }
 }
 
-/// @brief Puts the mailbox name in the wake prompt.
-///
-/// @details `{mailbox}` in the prompt becomes the mailbox name.
-/// Without `{mailbox}`, the name goes on a last line.
+/// Puts the mailbox name in the wake prompt: in place of `{mailbox}`, else on a last line.
 #[must_use]
 pub fn render_prompt(prompt: &str, mailbox: &str) -> String {
     if prompt.contains("{mailbox}") {
@@ -78,16 +74,14 @@ pub fn render_prompt(prompt: &str, mailbox: &str) -> String {
     }
 }
 
-/// @brief Shortens the output of a client for the wake result.
 fn clip(text: &str) -> String {
     text.trim().chars().take(MAX_DETAIL_CHARS).collect()
 }
 
-/// @brief Runs `codex queue --thread <session> --message <prompt>`.
+/// Runs `codex queue --thread <session> --message <prompt>`.
 ///
-/// @details The daemon runs the command without a shell, so no value can add a shell command.
-/// A Codex CLI that runs reads the prompt when its current turn ends.
-/// When the time ends, the daemon stops the command.
+/// The command runs without a shell, so no value can add a shell command. A running Codex CLI reads
+/// the prompt when its current turn ends. When the time ends, the command stops.
 async fn wake_codex(command: String, input: WakeInput, timeout: Duration) -> WakeResult {
     let Some(session_id) = input.session_id else {
         return WakeResult::failed("no Codex session id to wake");
@@ -128,7 +122,7 @@ async fn wake_codex(command: String, input: WakeInput, timeout: Duration) -> Wak
     }
 }
 
-/// @brief One session in the answer of `GET /session` of `OpenCode`.
+/// One session of the `GET /session` answer of `OpenCode`.
 #[derive(Debug, Deserialize)]
 struct OpencodeSession {
     id: String,
@@ -137,13 +131,11 @@ struct OpencodeSession {
     time: Option<OpencodeTime>,
 }
 
-/// @brief The times of an `OpenCode` session.
 #[derive(Debug, Deserialize)]
 struct OpencodeTime {
     updated: Option<f64>,
 }
 
-/// @brief Adds path segments to the URL of the `OpenCode` server.
 fn opencode_url(base_url: &str, segments: &[&str]) -> Result<url::Url, WakeResult> {
     let mut url = url::Url::parse(base_url)
         .map_err(|error| WakeResult::failed(format!("invalid OpenCode URL: {error}")))?;
@@ -154,9 +146,8 @@ fn opencode_url(base_url: &str, segments: &[&str]) -> Result<url::Url, WakeResul
     Ok(url)
 }
 
-/// @brief Finds the root session that `OpenCode` updated last.
-///
-/// @details The fixed `opencode` mailbox of v1 clients wakes this session.
+/// Returns the root session that `OpenCode` updated last: the target of the fixed `opencode`
+/// mailbox of v1 clients.
 async fn most_recent_root_session(
     http: &reqwest::Client,
     base_url: &str,
@@ -189,10 +180,10 @@ async fn most_recent_root_session(
         .ok_or_else(|| WakeResult::failed("no opencode session to wake"))
 }
 
-/// @brief Starts a turn in one `OpenCode` session with `POST /session/<id>/prompt_async`.
+/// Starts a turn in one `OpenCode` session with `POST /session/<id>/prompt_async`.
 ///
-/// @details The URL library removes the `.` and `..` segments.
-/// The function thus checks the session id first. Else an id such as `..` could reach another endpoint.
+/// The URL library removes `.` and `..` segments, so the session id is checked first: else an id
+/// such as `..` could reach another endpoint.
 async fn wake_opencode(http: reqwest::Client, base_url: String, input: WakeInput) -> WakeResult {
     let session_id = match input.session_id {
         Some(id) => id,

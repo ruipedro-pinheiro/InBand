@@ -1,36 +1,35 @@
 /**
- * @file inband.js
- * @brief The InBand plugin for OpenCode.
+ * @file The InBand plugin for OpenCode.
  *
- * @details OpenCode gives each plugin tool the sessionID of the session that calls it.
- * The model cannot change this value. The plugin gives the sessionID to the `inband` binary,
- * and the binary signs each request for that session.
- * OpenCode loads only JavaScript plugins, so the plugin is thin: all the logic is in the binary.
+ * OpenCode gives each plugin tool the sessionID of the session that calls it, and the model cannot
+ * change this value. The plugin gives the sessionID to the `inband` binary, which signs each
+ * request for that session. OpenCode loads only JavaScript plugins, so the plugin stays thin: all
+ * the logic is in the binary.
  *
- * The plugin also does two more things:
- * - it puts the InBand identity and protocol of each session in its system prompt;
- * - it runs the /lead, /join and /solo commands that the user types.
+ * The plugin also puts the InBand identity and protocol of each session in its system prompt, and
+ * runs the /lead, /join and /solo commands that the user types.
  */
 
 import { spawn } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
 
-/** @brief The `inband` binary. The installer writes its full path here. */
+/** The `inband` binary. The installer writes its full path here. */
 const BIN = process.env.INBAND_BIN || "inband";
 
-/** @brief The time that the plugin keeps the protocol text of a session. */
+/** How long the plugin keeps the protocol text of a session. */
 const CONTEXT_TTL_MS = 60_000;
 
-/** @brief The commands that change the team of a session. */
+/** The commands that change the team of a session. */
 const TEAM_COMMANDS = new Set(["lead", "join", "solo"]);
 
 /**
- * @brief Runs the `inband` binary.
+ * Runs the `inband` binary.
  *
- * @param args The arguments, for example `["opencode", "tools"]`.
- * @param input The text for the standard input.
- * @param signal Stops the binary when OpenCode cancels the call.
- * @return `{ ok, text }`: `ok` is true for exit code 0. `text` is the output, or the error text.
+ * @param {string[]} args The arguments, for example `["opencode", "tools"]`.
+ * @param {string} [input] The text for the standard input.
+ * @param {AbortSignal} [signal] Stops the binary when OpenCode cancels the call.
+ * @returns {Promise<{ok: boolean, text: string}>} `ok` for exit code 0; `text` is the output, or
+ *   the error text.
  */
 function runInband(args, input, signal) {
   return new Promise((resolve) => {
@@ -46,13 +45,12 @@ function runInband(args, input, signal) {
 }
 
 /**
- * @brief Changes one JSON Schema property into a zod type.
+ * Converts one JSON Schema property to a zod type: the binary describes the tool arguments with
+ * JSON Schema, and OpenCode wants zod.
  *
- * @details The binary describes the tool arguments with JSON Schema. OpenCode wants zod.
- *
- * @param schema The JSON Schema of the argument.
- * @param required False makes the argument optional.
- * @return The zod type.
+ * @param {object} schema The JSON Schema of the argument.
+ * @param {boolean} required False makes the argument optional.
+ * @returns {import("zod").ZodTypeAny}
  */
 function toZod(schema, required) {
   const z = tool.schema;
@@ -69,11 +67,10 @@ function toZod(schema, required) {
 }
 
 /**
- * @brief Makes the OpenCode tools from the tool list of the binary.
+ * Creates the OpenCode tools `inband_<name>` from the tool list of the binary. Each call gives the
+ * sessionID of the caller to the binary.
  *
- * @details Each tool is `inband_<name>`. Each call gives the sessionID of the caller to the binary.
- *
- * @return The tools, by name. No tools when the binary does not run.
+ * @returns {Promise<object>} The tools by name; none when the binary cannot run.
  */
 async function loadTools() {
   const listed = await runInband(["opencode", "tools"]);
@@ -106,18 +103,17 @@ async function loadTools() {
   return definitions;
 }
 
-/**
- * @brief The plugin: the InBand tools, the protocol in the system prompt, and the team commands.
- */
+/** The plugin: the InBand tools, the protocol in the system prompt, and the team commands. */
 export const InBand = async () => {
   const tools = await loadTools();
   const contexts = new Map();
 
   /**
-   * @brief Gives the identity and the protocol of a session.
+   * Returns the identity and the protocol of a session, kept for one minute. The request also binds
+   * the mailbox to the session, so that wakes go to this session.
    *
-   * @details The request also binds the mailbox to the session, so that wakes go to this session.
-   * The text stays in memory for one minute.
+   * @param {string} sessionID
+   * @returns {Promise<string>}
    */
   async function sessionContext(sessionID) {
     const cached = contexts.get(sessionID);
@@ -131,15 +127,14 @@ export const InBand = async () => {
   return {
     tool: tools,
 
-    /** @brief Adds the InBand identity and protocol to the system prompt of each request. */
+    /** Adds the InBand identity and protocol to the system prompt of each request. */
     async "experimental.chat.system.transform"(input, output) {
       if (input.sessionID) output.system.push(await sessionContext(input.sessionID));
     },
 
     /**
-     * @brief Runs /lead, /join and /solo, and replaces the command text with the result.
-     *
-     * @details The model then tells the user what changed. The next request gets the new protocol.
+     * Runs /lead, /join and /solo, and replaces the command text with the result: the model then
+     * tells the user what changed, and the next request gets the new protocol.
      */
     async "command.execute.before"(input, output) {
       if (!TEAM_COMMANDS.has(input.command)) return;

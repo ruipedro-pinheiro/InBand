@@ -1,10 +1,8 @@
-//! @file hooks.rs
-//! @brief The `inband hook claude` and `inband hook codex` commands, and the team commands of the user.
+//! The `inband hook claude` and `inband hook codex` commands, and the team commands of the user.
 //!
-//! @details The user types `/lead x`, `/join x` or `/solo` in Claude Code.
-//! In Codex, the user types `$lead x`, because Codex refuses unknown slash commands.
-//! Only the `UserPromptSubmit` hook sees these commands, and only the user writes a prompt.
-//! A model, or mail from another agent, thus cannot change a team.
+//! The user types `/lead x`, `/join x` or `/solo` in Claude Code, and `$lead x` in Codex, which
+//! refuses unknown slash commands. Only the `UserPromptSubmit` hook sees these commands, and only
+//! the user writes a prompt: a model, or mail from another agent, cannot change a team.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -18,14 +16,13 @@ use crate::codex_session;
 use crate::config::EnvMap;
 use crate::protocol::identity_text;
 
-/// @brief The maximum time of a request of a hook. A hook must never stop a session for long.
+/// The longest request of a hook: a hook must never hold a session back.
 pub const HOOK_TIMEOUT: Duration = Duration::from_secs(2);
-/// @brief The minimum time between two "mail waits" reminders for one mailbox.
+/// The minimum time between two "mail waits" reminders for one mailbox.
 const MAILCHECK_SECONDS: u64 = 120;
-/// @brief The maximum length of a prompt that can be a team command.
 const MAX_PROMPT_COMMAND: usize = 200;
 
-/// @brief A team command that the user typed.
+/// A team command that the user typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeamCommand {
     Lead(String),
@@ -33,12 +30,10 @@ pub enum TeamCommand {
     Solo,
 }
 
-/// @brief Finds the team command of a prompt.
+/// Returns the team command of a prompt: `None` for a usual prompt, an error text for a team
+/// command with wrong arguments.
 ///
-/// @details The command must be the whole prompt, on one line. It starts with `/` or `$`.
-///
-/// @param prompt The prompt of the user.
-/// @return `None` for a usual prompt. An error text for a team command with wrong arguments.
+/// The command must be the whole prompt, on one line, and start with `/` or `$`.
 #[must_use]
 pub fn parse_team_command(prompt: &str) -> Option<Result<TeamCommand, String>> {
     let prompt = prompt.trim();
@@ -62,14 +57,12 @@ pub fn parse_team_command(prompt: &str) -> Option<Result<TeamCommand, String>> {
     Some(command)
 }
 
-/// @brief Runs a team command for a mailbox.
+/// Runs a team command for a mailbox, and returns the text for the session: what changed, then the
+/// new protocol.
 ///
-/// @param client The client of the daemon.
-/// @param mailbox The mailbox of the session.
-/// @param session The session id.
-/// @param command The command.
-/// @return The text for the session: what changed, then the new protocol.
-/// @throws ClientError The daemon does not answer, or refuses the command.
+/// # Errors
+///
+/// Returns an error when the daemon does not answer or refuses the command.
 pub async fn run_team_command(
     client: &Client,
     mailbox: &str,
@@ -91,7 +84,6 @@ pub async fn run_team_command(
     ))
 }
 
-/// @brief Writes one line that tells what a team command changed.
 fn change_summary(change: &Value) -> String {
     let mailbox = change["mailbox"].as_str().unwrap_or("this session");
     let team = change["team"].as_str().unwrap_or_default();
@@ -114,17 +106,14 @@ fn change_summary(change: &Value) -> String {
     }
 }
 
-/// @brief Makes a hook output that adds text to the context of the session.
 fn context(event: &str, text: &str) -> Value {
     json!({ "hookSpecificOutput": { "hookEventName": event, "additionalContext": text } })
 }
 
-/// @brief Makes the hook output for a typed team command.
+/// Returns the hook output for a typed team command, or `None` for a usual prompt.
 ///
-/// @details A successful command adds its result to the context.
-/// A failed command blocks the prompt: the user sees the error, and the model does not receive the command.
-///
-/// @return `None` when the prompt is not a team command.
+/// A successful command adds its result to the context. A failed command blocks the prompt: the
+/// user sees the error, and the model does not receive the command.
 async fn team_command_output(
     client: &Client,
     mailbox: &str,
@@ -143,12 +132,9 @@ async fn team_command_output(
     )
 }
 
-/// @brief Gives the mailbox of a Claude Code session: `claude-<directory>-<4 hex chars of the session id>`.
+/// Returns the mailbox of a Claude Code session: `claude-<directory>-<4 hex chars of the session>`.
 ///
-/// @details This is the name of v1, so the mail of v1 stays in the same mailbox.
-///
-/// @param cwd The working directory of the session.
-/// @param session_id The session id.
+/// This is the name of v1, so the v1 mail stays in the same mailbox.
 #[must_use]
 pub fn claude_mailbox(cwd: &str, session_id: &str) -> String {
     let base = Path::new(cwd.trim_end_matches('/'))
@@ -185,7 +171,6 @@ pub fn claude_mailbox(cwd: &str, session_id: &str) -> String {
     )
 }
 
-/// @brief Gives a text field of the hook JSON, or an empty text.
 fn text_field<'a>(payload: &'a Value, name: &str) -> &'a str {
     payload
         .get(name)
@@ -193,18 +178,12 @@ fn text_field<'a>(payload: &'a Value, name: &str) -> &'a str {
         .unwrap_or_default()
 }
 
-/// @brief Runs one Claude Code hook.
+/// Runs one Claude Code hook, and returns its output, or `None` when it has nothing to say.
 ///
-/// @details The events are:
-/// - `SessionStart`: binds the mailbox, and gives the identity and the protocol;
-/// - `UserPromptSubmit`: runs a team command;
-/// - `PostToolUse`: tells a session that works that it has unread mail;
-/// - `SessionEnd`: marks the session offline.
-///
-/// @param client The client of the daemon.
-/// @param payload The JSON that Claude Code gives to the hook.
-/// @param state The time of the last reminder for each mailbox.
-/// @return The hook output, or `None` when the hook has nothing to say.
+/// - `SessionStart` binds the mailbox, and returns the identity and the protocol.
+/// - `UserPromptSubmit` runs a team command.
+/// - `PostToolUse` tells a working session about its unread mail, at most every two minutes.
+/// - `SessionEnd` marks the session offline.
 pub async fn claude_hook(
     client: &Client,
     payload: &Value,
@@ -248,9 +227,8 @@ pub async fn claude_hook(
     }
 }
 
-/// @brief Runs the Claude Code `SessionStart` hook.
-///
-/// @details When the daemon does not answer, the hook still gives the mailbox name, and tells that InBand is not available.
+/// Runs the `SessionStart` hook. When the daemon does not answer, the output still gives the
+/// mailbox, and tells that InBand is not available.
 async fn claude_session_start(client: &Client, mailbox: &str, session: &str) -> Value {
     let path = format!("/claude/hook?agent={mailbox}&event=SessionStart");
     match client
@@ -280,11 +258,9 @@ async fn claude_session_start(client: &Client, mailbox: &str, session: &str) -> 
     }
 }
 
-/// @brief Runs one Codex hook.
+/// Runs one Codex hook, and returns its output, or `None` when it has nothing to say.
 ///
-/// @details `SessionStart` and `Stop` go to the daemon without change. `UserPromptSubmit` runs a team command.
-///
-/// @return The hook output, or `None` when the hook has nothing to say.
+/// `SessionStart` and `Stop` go to the daemon unchanged. `UserPromptSubmit` runs a team command.
 pub async fn codex_hook(client: &Client, payload: &Value) -> Option<Value> {
     let session = text_field(payload, "session_id");
     let mailbox = codex_session::canonical_mailbox(session).ok()?;
@@ -314,13 +290,13 @@ pub async fn codex_hook(client: &Client, payload: &Value) -> Option<Value> {
     }
 }
 
-/// @brief Limits the "mail waits" reminders to one for each mailbox every two minutes.
+/// Limits the "mail waits" reminders to one for each mailbox every two minutes.
 pub struct MailcheckState {
     directory: Option<PathBuf>,
 }
 
 impl MailcheckState {
-    /// @brief Keeps the times in `$XDG_RUNTIME_DIR/inband`, else in `~/.cache/inband`.
+    /// Keeps the reminder times in `$XDG_RUNTIME_DIR/inband`, else in `~/.cache/inband`.
     #[must_use]
     pub fn from_env(env: &EnvMap) -> Self {
         let non_empty = |name: &str| env.get(name).filter(|value| !value.is_empty());
@@ -330,13 +306,13 @@ impl MailcheckState {
         Self { directory }
     }
 
-    /// @brief Gives a state without limit, for the tests.
+    /// Returns a state without a limit, for the tests.
     #[must_use]
     pub fn always() -> Self {
         Self { directory: None }
     }
 
-    /// @brief Tells if a reminder can go now, and keeps the time when it can.
+    /// Returns `true` when a reminder can go now, and keeps the time.
     fn due(&self, mailbox: &str) -> bool {
         let Some(directory) = &self.directory else {
             return true;
@@ -358,7 +334,6 @@ impl MailcheckState {
     }
 }
 
-/// @brief Creates a directory that only its owner can open.
 fn create_private_dir(directory: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()

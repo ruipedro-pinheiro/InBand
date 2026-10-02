@@ -1,6 +1,3 @@
-//! @file http_tests.rs
-//! @brief The tests of the HTTP routes: the loopback guard, the authentication, the hooks and the team commands.
-
 use axum::http::Request as HttpRequest;
 use tower::ServiceExt;
 
@@ -44,9 +41,7 @@ async fn refuses_other_hosts_and_browser_origins() {
     }
 }
 
-/// @brief The daemon refuses requests without a valid token or signature.
-///
-/// @details A signature for one path does not open another path.
+/// A signature for one path does not open another path.
 #[tokio::test]
 async fn refuses_unauthenticated_requests() {
     let (app, _) = app();
@@ -111,7 +106,7 @@ async fn claude_session_start_binds_the_mailbox_and_returns_the_protocol() {
     assert_eq!(status, StatusCode::OK, "the same session can start again");
 }
 
-/// @brief Makes team `x` with a Claude lead and a Claude worker, through the hooks and the team commands.
+/// Team `x` with a Claude lead and a Claude worker, made through the hooks and the team commands.
 async fn team_of_two(app: &Router) {
     start_claude(app, "claude-lead-0001", "sess-lead").await;
     start_claude(app, "claude-w-0002", "sess-w").await;
