@@ -173,11 +173,11 @@ fn codex_is_a_recipient_only_alias() {
         Err(BridgeError::AliasIdentity(_))
     ));
     assert!(matches!(
-        bridge.set_presence("codex", true),
+        bridge.set_presence(&admin(), "codex", true),
         Err(BridgeError::AliasIdentity(_))
     ));
     assert!(matches!(
-        bridge.peek_unread("codex"),
+        bridge.peek_unread(&admin(), "codex"),
         Err(BridgeError::AliasIdentity(_))
     ));
 }
@@ -202,7 +202,7 @@ fn unregistered_codex_mailboxes_are_refused() {
         Err(BridgeError::NoCodexSession)
     ));
     assert!(matches!(
-        bridge.set_presence(&mailbox, true),
+        bridge.set_presence(&admin(), &mailbox, true),
         Err(BridgeError::CodexNotRegistered(_))
     ));
 }
@@ -210,9 +210,13 @@ fn unregistered_codex_mailboxes_are_refused() {
 #[test]
 fn the_codex_alias_targets_the_most_recent_session() {
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     std::thread::sleep(Duration::from_millis(5));
-    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_B, "/b", "ready")
+        .unwrap();
     team(
         &bridge,
         "x",
@@ -224,14 +228,16 @@ fn the_codex_alias_targets_the_most_recent_session() {
         .unwrap();
     assert_eq!(sent.resolved_to, codex_mailbox(SESSION_B));
     std::thread::sleep(Duration::from_millis(5));
-    bridge.touch_codex(&codex_mailbox(SESSION_A), None).unwrap();
+    bridge
+        .touch_codex(&admin(), &codex_mailbox(SESSION_A), None)
+        .unwrap();
     let again = bridge
         .send(&me("claude-a-0001"), "claude-a-0001", "codex", "hi")
         .unwrap();
     assert_eq!(again.resolved_to, codex_mailbox(SESSION_A));
     assert_eq!(
         bridge
-            .fetch_unread(&codex_mailbox(SESSION_B))
+            .fetch_unread(&admin(), &codex_mailbox(SESSION_B))
             .unwrap()
             .len(),
         1
@@ -241,12 +247,14 @@ fn the_codex_alias_targets_the_most_recent_session() {
 #[test]
 fn presence_for_registered_codex_and_other_agents() {
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
     bridge
-        .set_presence(&codex_mailbox(SESSION_A), true)
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
         .unwrap();
-    bridge.set_presence("opencode", false).unwrap();
-    let status = bridge.status(None, None, None).unwrap();
+    bridge
+        .set_presence(&admin(), &codex_mailbox(SESSION_A), true)
+        .unwrap();
+    bridge.set_presence(&admin(), "opencode", false).unwrap();
+    let status = bridge.status(&admin(), None).unwrap();
     let find = |name: &str| {
         status
             .agents
@@ -263,9 +271,13 @@ fn presence_for_registered_codex_and_other_agents() {
 #[test]
 fn broadcasts_reach_every_agent_as_separate_deliveries() {
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
-    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
-    bridge.set_presence("opencode", true).unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_B, "/b", "ready")
+        .unwrap();
+    bridge.set_presence(&admin(), "opencode", true).unwrap();
     team(
         &bridge,
         "x",
@@ -282,12 +294,12 @@ fn broadcasts_reach_every_agent_as_separate_deliveries() {
     assert_eq!(sent.delivered_to.len(), 3);
     assert_eq!(
         bridge
-            .fetch_unread(&codex_mailbox(SESSION_A))
+            .fetch_unread(&admin(), &codex_mailbox(SESSION_A))
             .unwrap()
             .len(),
         1
     );
-    assert_eq!(bridge.fetch_unread("opencode").unwrap().len(), 1);
+    assert_eq!(bridge.fetch_unread(&admin(), "opencode").unwrap().len(), 1);
 }
 
 #[test]
@@ -297,13 +309,21 @@ fn reading_marks_mail_read_but_peeking_does_not() {
     bridge
         .send(&me("claude-a-0001"), "claude-a-0001", "opencode", "one")
         .unwrap();
-    assert_eq!(bridge.peek_unread("opencode").unwrap().len(), 1);
-    assert_eq!(bridge.fetch_unread("opencode").unwrap()[0].content, "one");
-    assert!(bridge.fetch_unread("opencode").unwrap().is_empty());
+    assert_eq!(bridge.peek_unread(&admin(), "opencode").unwrap().len(), 1);
+    assert_eq!(
+        bridge.fetch_unread(&admin(), "opencode").unwrap()[0].content,
+        "one"
+    );
+    assert!(
+        bridge
+            .fetch_unread(&admin(), "opencode")
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
-fn history_is_filtered_to_visible_mailboxes() {
+fn history_shows_each_session_its_own_mail() {
     let bridge = bus();
     team(&bridge, "x", "claude-a-0001", &["opencode"]);
     team(&bridge, "y", "other-1", &["other-2"]);
@@ -321,18 +341,28 @@ fn history_is_filtered_to_visible_mailboxes() {
     bridge
         .send(&me("other-1"), "other-1", "other-2", "hidden")
         .unwrap();
-    let patterns = vec!["claude-*".to_owned()];
-    let history = bridge.history(50, None, Some(&patterns)).unwrap();
-    assert_eq!(history.total, 2);
+    let lead = me("claude-a-0001");
+    let mine = bridge
+        .history(&lead, Some("claude-a-0001"), 50, None)
+        .unwrap();
+    assert_eq!(mine.total, 2);
     assert_eq!(
-        history
-            .messages
+        mine.messages
             .iter()
             .map(|m| m.content.as_str())
             .collect::<Vec<_>>(),
         ["visible out", "visible in"]
     );
-    assert_eq!(bridge.history(50, None, None).unwrap().total, 3);
+    let other = bridge
+        .history(&me("other-2"), Some("other-2"), 50, None)
+        .unwrap();
+    assert_eq!(other.messages.len(), 1);
+    assert_eq!(other.messages[0].content, "hidden");
+    assert_eq!(bridge.history(&admin(), None, 50, None).unwrap().total, 3);
+    assert!(matches!(
+        bridge.history(&lead, None, 50, None),
+        Err(BridgeError::ViewerRequired)
+    ));
 }
 
 #[test]
@@ -343,10 +373,10 @@ fn clear_needs_confirmation() {
         .send(&me("claude-a-0001"), "claude-a-0001", "opencode", "one")
         .unwrap();
     assert!(matches!(
-        bridge.clear("yes"),
+        bridge.clear(&admin(), "yes"),
         Err(BridgeError::ClearNotConfirmed)
     ));
-    assert_eq!(bridge.clear("wipe").unwrap(), 1);
+    assert_eq!(bridge.clear(&admin(), "wipe").unwrap(), 1);
 }
 
 // ---- waits and channel subscriptions ----
@@ -357,7 +387,11 @@ async fn wait_returns_a_preview_when_mail_arrives() {
     team(&bridge, "x", "claude-a-0001", &["opencode"]);
     let waiter = {
         let bridge = Arc::clone(&bridge);
-        tokio::spawn(async move { bridge.wait_for_messages("opencode", 30, false).await })
+        tokio::spawn(async move {
+            bridge
+                .wait_for_messages(&admin(), "opencode", 30, false)
+                .await
+        })
     };
     tokio::task::yield_now().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -368,7 +402,7 @@ async fn wait_returns_a_preview_when_mail_arrives() {
     let preview = waiter.await.unwrap().unwrap();
     assert_eq!(preview[0].content, "ping");
     assert_eq!(
-        bridge.fetch_unread("opencode").unwrap().len(),
+        bridge.fetch_unread(&admin(), "opencode").unwrap().len(),
         1,
         "a preview must not consume mail"
     );
@@ -381,12 +415,16 @@ async fn caps_pending_waits_per_mailbox() {
     for _ in 0..8 {
         let bridge = Arc::clone(&bridge);
         tasks.push(tokio::spawn(async move {
-            bridge.wait_for_messages("opencode", 30, false).await
+            bridge
+                .wait_for_messages(&admin(), "opencode", 30, false)
+                .await
         }));
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(matches!(
-        bridge.wait_for_messages("opencode", 30, false).await,
+        bridge
+            .wait_for_messages(&admin(), "opencode", 30, false)
+            .await,
         Err(BridgeError::TooManyWaits(_))
     ));
     for task in tasks {
@@ -407,7 +445,7 @@ async fn channel_subscriptions_get_pushed_mail_for_their_exact_mailbox() {
         let bridge = Arc::clone(&bridge);
         tokio::spawn(async move {
             bridge
-                .subscribe_mailbox("claude-web-c3d4", 30, Some(0))
+                .subscribe_mailbox(&admin(), "claude-web-c3d4", 30, Some(0))
                 .await
         })
     };
@@ -456,7 +494,7 @@ async fn the_cursor_replays_only_later_unread_mail() {
         )
         .unwrap();
     let rows = bridge
-        .subscribe_mailbox("claude-b-0002", 1, Some(first.message_id))
+        .subscribe_mailbox(&admin(), "claude-b-0002", 1, Some(first.message_id))
         .await
         .unwrap();
     assert_eq!(
@@ -466,7 +504,7 @@ async fn the_cursor_replays_only_later_unread_mail() {
     // Without a cursor, old shims only wait for live mail.
     assert!(
         bridge
-            .subscribe_mailbox("claude-b-0002", 1, None)
+            .subscribe_mailbox(&admin(), "claude-b-0002", 1, None)
             .await
             .unwrap()
             .is_empty()
@@ -480,12 +518,16 @@ async fn caps_pending_subscriptions_per_target() {
     for _ in 0..8 {
         let bridge = Arc::clone(&bridge);
         tasks.push(tokio::spawn(async move {
-            bridge.subscribe_mailbox("claude-x-0001", 30, None).await
+            bridge
+                .subscribe_mailbox(&admin(), "claude-x-0001", 30, None)
+                .await
         }));
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(matches!(
-        bridge.subscribe_mailbox("claude-x-0001", 30, None).await,
+        bridge
+            .subscribe_mailbox(&admin(), "claude-x-0001", 30, None)
+            .await,
         Err(BridgeError::TooManySubscriptions(_))
     ));
     for task in tasks {
@@ -610,7 +652,7 @@ fn a_new_lead_turns_the_previous_one_into_a_worker() {
     let change = bridge.set_lead(&admin(), "claude-new-0002", "x").unwrap();
     assert_eq!(change.replaced_lead.as_deref(), Some("claude-old-0001"));
     assert_eq!(bridge.role_of("claude-old-0001").unwrap(), Role::Worker);
-    let notice = bridge.fetch_unread("claude-old-0001").unwrap();
+    let notice = bridge.fetch_unread(&admin(), "claude-old-0001").unwrap();
     assert!(
         notice[0]
             .content
@@ -624,14 +666,14 @@ fn join_notifies_the_lead_and_leave_makes_a_session_solo() {
     let bridge = bus();
     bridge.set_lead(&admin(), "claude-lead-0001", "x").unwrap();
     bridge.join(&admin(), "claude-w-0002", "x").unwrap();
-    let notice = bridge.fetch_unread("claude-lead-0001").unwrap();
+    let notice = bridge.fetch_unread(&admin(), "claude-lead-0001").unwrap();
     assert!(notice[0].content.contains("claude-w-0002 joined team x"));
 
     let change = bridge.leave(&admin(), "claude-w-0002").unwrap();
     assert_eq!(change.previous_team.as_deref(), Some("x"));
     assert_eq!(bridge.role_of("claude-w-0002").unwrap(), Role::Solo);
     assert!(
-        bridge.fetch_unread("claude-lead-0001").unwrap()[0]
+        bridge.fetch_unread(&admin(), "claude-lead-0001").unwrap()[0]
             .content
             .contains("claude-w-0002 left team x")
     );
@@ -711,7 +753,9 @@ fn workers_write_only_to_the_lead_of_their_team() {
 #[test]
 fn two_teams_never_reach_each_other() {
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     team(&bridge, "x", "claude-x-0001", &["claude-x-0002"]);
     team(&bridge, "y", "opencode", &[&codex_mailbox(SESSION_A)]);
     assert!(matches!(
@@ -736,7 +780,7 @@ fn two_teams_never_reach_each_other() {
         .send(&me("claude-x-0001"), "claude-x-0001", "all", "team x only")
         .unwrap();
     assert_eq!(all.delivered_to, ["claude-x-0002"]);
-    assert!(bridge.peek_unread("opencode").unwrap().is_empty());
+    assert!(bridge.peek_unread(&admin(), "opencode").unwrap().is_empty());
 }
 
 #[test]
@@ -790,7 +834,12 @@ fn ping_shows_only_the_viewer_team() {
     let bridge = bus();
     team(&bridge, "x", "claude-x-0001", &["claude-x-0002"]);
     team(&bridge, "y", "claude-y-0001", &["claude-y-0002"]);
-    bridge.set_presence("claude-solo-0003", true).unwrap();
+    bridge
+        .bind_session(&me("claude-solo-0003"), "claude-solo-0003")
+        .unwrap();
+    bridge
+        .set_presence(&me("claude-solo-0003"), "claude-solo-0003", true)
+        .unwrap();
     let names = |status: &Status| {
         status
             .agents
@@ -799,18 +848,22 @@ fn ping_shows_only_the_viewer_team() {
             .collect::<Vec<_>>()
     };
 
-    let x = bridge.status(Some("claude-x-0002"), None, None).unwrap();
+    let x = bridge
+        .status(&me("claude-x-0002"), Some("claude-x-0002"))
+        .unwrap();
     assert_eq!(names(&x), ["claude-x-0001", "claude-x-0002"]);
     assert_eq!(x.team.as_deref(), Some("x"));
     assert_eq!(x.lead.as_deref(), Some("claude-x-0001"));
     assert_eq!(x.agents[0].role, "lead");
 
-    let solo = bridge.status(Some("claude-solo-0003"), None, None).unwrap();
+    let solo = bridge
+        .status(&me("claude-solo-0003"), Some("claude-solo-0003"))
+        .unwrap();
     assert_eq!(names(&solo), ["claude-solo-0003"]);
     assert_eq!(solo.agents[0].role, "solo");
     assert_eq!(solo.lead, None);
 
-    assert_eq!(bridge.status(None, None, None).unwrap().agents.len(), 5);
+    assert_eq!(bridge.status(&admin(), None).unwrap().agents.len(), 5);
 }
 
 #[test]
@@ -862,7 +915,7 @@ fn content_is_sanitized_before_storage() {
             forged,
         )
         .unwrap();
-    let stored = &bridge.fetch_unread("claude-b-0002").unwrap()[0].content;
+    let stored = &bridge.fetch_unread(&admin(), "claude-b-0002").unwrap()[0].content;
     assert!(!stored.contains("<channel") && !stored.contains("</channel"));
     assert!(!stored.contains('\u{1b}') && !stored.contains('\u{202E}'));
 }
@@ -983,7 +1036,9 @@ fn a_full_inbox_refuses_new_mail() {
 async fn codex_wakes_retry_with_the_configured_delays() {
     let fake = FakeWake::script(&[WakeDisposition::Failed; 5]);
     let bridge = bridge_with(codex_wake(&[5, 15, 30, 60]), Arc::clone(&fake));
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     let mailbox = codex_mailbox(SESSION_A);
     team(&bridge, "x", "claude-a-0001", &[&mailbox]);
     let sent = bridge
@@ -1016,7 +1071,9 @@ async fn codex_wakes_retry_with_the_configured_delays() {
 async fn a_queued_wake_stops_retries() {
     let fake = FakeWake::script(&[WakeDisposition::Queued]);
     let bridge = bridge_with(codex_wake(&[5, 15]), Arc::clone(&fake));
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     team(&bridge, "x", "claude-a-0001", &[&codex_mailbox(SESSION_A)]);
     bridge
         .send(
@@ -1034,14 +1091,16 @@ async fn a_queued_wake_stops_retries() {
 async fn reading_the_mail_cancels_a_pending_retry() {
     let fake = FakeWake::script(&[WakeDisposition::Failed, WakeDisposition::Failed]);
     let bridge = bridge_with(codex_wake(&[5, 15]), Arc::clone(&fake));
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     let mailbox = codex_mailbox(SESSION_A);
     team(&bridge, "x", "claude-a-0001", &[&mailbox]);
     bridge
         .send(&me("claude-a-0001"), "claude-a-0001", &mailbox, "task")
         .unwrap();
     tokio::time::sleep(Duration::from_millis(1)).await;
-    bridge.fetch_unread(&mailbox).unwrap();
+    bridge.fetch_unread(&admin(), &mailbox).unwrap();
     tokio::time::sleep(Duration::from_mins(1)).await;
     assert_eq!(fake.calls().len(), 1);
 }
@@ -1050,7 +1109,9 @@ async fn reading_the_mail_cancels_a_pending_retry() {
 async fn only_successful_wakes_debounce() {
     let fake = FakeWake::script(&[WakeDisposition::Started, WakeDisposition::Started]);
     let bridge = bridge_with(codex_wake(&[]), Arc::clone(&fake));
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     let mailbox = codex_mailbox(SESSION_A);
     team(&bridge, "x", "claude-a-0001", &[&mailbox]);
     bridge
@@ -1071,8 +1132,12 @@ async fn the_hourly_cap_is_per_mailbox() {
         common.max_wakes_per_hour = 1;
     }
     let bridge = bridge_with(wake, Arc::clone(&fake));
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
-    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_B, "/b", "ready")
+        .unwrap();
     team(
         &bridge,
         "x",
@@ -1112,8 +1177,12 @@ async fn the_hourly_cap_is_per_mailbox() {
 async fn startup_reconciliation_wakes_only_sessions_with_unread_mail() {
     let fake = FakeWake::script(&[WakeDisposition::Started]);
     let bridge = bridge_with(codex_wake(&[]), Arc::clone(&fake));
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
-    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_B, "/b", "ready")
+        .unwrap();
     {
         let db = lock(&bridge.db);
         db.execute(

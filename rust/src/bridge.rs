@@ -31,6 +31,9 @@ const SEND_RATE_PER_MINUTE: usize = 30;
 /// Unread messages a recipient may hold before new direct mail is refused.
 const MAX_UNREAD_PER_RECIPIENT: i64 = 200;
 const STALE_AFTER_SECONDS: u64 = 1800;
+/// The messages that the viewer `?1` sent or received. `?1` NULL selects every message.
+const VIEWER_MAIL_SQL: &str = "(?1 IS NULL OR m.sender = ?1
+     OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND d.recipient = ?1))";
 
 /// `name`, `first_seen` and `last_seen` of the agents table.
 type AgentRow = (String, String, Option<String>);
@@ -69,6 +72,10 @@ pub enum BridgeError {
     TooManyWaits(String),
     #[error("too many pending subscriptions for \"{0}\"")]
     TooManySubscriptions(String),
+    #[error("pass your own mailbox: only the admin token sees every agent")]
+    ViewerRequired,
+    #[error("this needs the admin token")]
+    AdminRequired,
     #[error("refusing to clear: pass confirm=\"wipe\" to delete all messages")]
     ClearNotConfirmed,
     #[error(transparent)]
@@ -964,26 +971,52 @@ impl Bridge {
         })
     }
 
+    /// Normalizes a mailbox that the caller reads or acts for, checks that it may, and records the
+    /// mailbox as seen.
+    fn acting_mailbox(
+        &self,
+        caller: &Caller,
+        raw: &str,
+        field: &'static str,
+    ) -> Result<String, BridgeError> {
+        let mailbox = Self::normalize_agent(raw, field)?;
+        Self::require_concrete(&mailbox)?;
+        let mut db = lock(&self.db);
+        Self::require_registered_codex(&db, &mailbox)?;
+        Self::check_acting(&db, caller, field, &mailbox)?;
+        Self::touch_agent(&mut db, &mailbox)?;
+        Ok(mailbox)
+    }
+
+    fn unread_of(&self, recipient: &str) -> Result<Vec<MessageRow>, BridgeError> {
+        Ok(message_rows(&lock(&self.db), UNREAD_SQL, [recipient])?)
+    }
+
     /// Unread mail without marking it read.
     ///
     /// # Errors
-    /// Returns an error for an invalid name, an unregistered Codex mailbox, or SQLite.
-    pub fn peek_unread(&self, for_raw: &str) -> Result<Vec<MessageRow>, BridgeError> {
-        let recipient = Self::normalize_agent(for_raw, "for")?;
-        let mut db = lock(&self.db);
-        Self::touch_agent(&mut db, &recipient)?;
-        Ok(message_rows(&db, UNREAD_SQL, [&recipient])?)
+    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    pub fn peek_unread(
+        &self,
+        caller: &Caller,
+        for_raw: &str,
+    ) -> Result<Vec<MessageRow>, BridgeError> {
+        let recipient = self.acting_mailbox(caller, for_raw, "for")?;
+        self.unread_of(&recipient)
     }
 
     /// Unread mail, marked read. The only call that consumes mail.
     ///
     /// # Errors
-    /// Returns an error for an invalid name, an unregistered Codex mailbox, or SQLite.
-    pub fn fetch_unread(&self, for_raw: &str) -> Result<Vec<MessageRow>, BridgeError> {
-        let recipient = Self::normalize_agent(for_raw, "for")?;
+    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    pub fn fetch_unread(
+        &self,
+        caller: &Caller,
+        for_raw: &str,
+    ) -> Result<Vec<MessageRow>, BridgeError> {
+        let recipient = self.acting_mailbox(caller, for_raw, "for")?;
         let rows = {
             let mut db = lock(&self.db);
-            Self::touch_agent(&mut db, &recipient)?;
             let tx = db.transaction()?;
             let rows = message_rows(&tx, UNREAD_SQL, [&recipient])?;
             if !rows.is_empty() {
@@ -1012,15 +1045,16 @@ impl Bridge {
     /// Blocks until mail arrives or the timeout ends, then returns a preview of the unread mail.
     ///
     /// # Errors
-    /// Returns an error for an invalid name, the codex alias, too many waits, or SQLite.
+    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, too many
+    /// waits, or SQLite.
     pub async fn wait_for_messages(
         &self,
+        caller: &Caller,
         for_raw: &str,
         timeout_seconds: u64,
         long_wait: bool,
     ) -> Result<Vec<MessageRow>, BridgeError> {
-        let recipient = Self::normalize_agent(for_raw, "for")?;
-        Self::require_concrete(&recipient)?;
+        let recipient = self.acting_mailbox(caller, for_raw, "for")?;
         let cap = if long_wait {
             MAX_LONG_WAIT_SECONDS
         } else {
@@ -1028,7 +1062,7 @@ impl Bridge {
         };
         let timeout = Duration::from_secs(timeout_seconds.clamp(5, cap));
         let mut events = self.events.subscribe();
-        let immediate = self.peek_unread(&recipient)?;
+        let immediate = self.unread_of(&recipient)?;
         if !immediate.is_empty() {
             return Ok(immediate);
         }
@@ -1052,39 +1086,44 @@ impl Bridge {
                 _ => break,
             }
         }
-        self.peek_unread(&recipient)
+        self.unread_of(&recipient)
     }
 
-    /// Long poll for one exact mailbox, used by the channel shim.
+    /// Long poll for one exact mailbox, used by the channel shim of that mailbox's session.
     ///
     /// # Errors
-    /// See [`Self::subscribe`].
+    /// Returns an error for a caller that cannot act as the mailbox. See also [`Self::subscribe`].
     pub async fn subscribe_mailbox(
         &self,
+        caller: &Caller,
         mailbox_raw: &str,
         timeout_seconds: u64,
         after_id: Option<i64>,
     ) -> Result<Vec<MessageRow>, BridgeError> {
-        let mailbox = Self::normalize_agent(mailbox_raw, "mailbox")?;
-        {
-            let mut db = lock(&self.db);
-            Self::touch_agent(&mut db, &mailbox)?;
-        }
+        let mailbox = self.acting_mailbox(caller, mailbox_raw, "mailbox")?;
         self.subscribe(&mailbox, true, timeout_seconds, after_id)
             .await
     }
 
-    /// Long poll for a whole `prefix-*` family.
+    /// Long poll for a whole `prefix-*` family. It reads the mail of many sessions, so only the
+    /// admin token may use it.
     ///
     /// # Errors
-    /// See [`Self::subscribe`].
+    /// Returns an error for a caller without the admin token. See also [`Self::subscribe`].
     pub async fn subscribe_family(
         &self,
+        caller: &Caller,
         prefix_raw: &str,
         timeout_seconds: u64,
         after_id: Option<i64>,
     ) -> Result<Vec<MessageRow>, BridgeError> {
         let prefix = Self::normalize_agent(prefix_raw, "prefix")?;
+        if !caller.auth.admin {
+            return Err(BridgeError::NotAuthorized {
+                field: "prefix",
+                agent: prefix,
+            });
+        }
         self.subscribe(&prefix, false, timeout_seconds, after_id)
             .await
     }
@@ -1162,28 +1201,20 @@ impl Bridge {
         }
     }
 
-    /// Records the online or offline state that the hooks report.
+    /// Records the online or offline state that the hooks of a session report.
     ///
     /// # Errors
-    /// Returns an error for an invalid name, the codex alias, an unregistered Codex mailbox, or SQLite.
-    pub fn set_presence(&self, name_raw: &str, online: bool) -> Result<(), BridgeError> {
-        let name = Self::normalize_agent(name_raw, "agent")?;
-        Self::require_concrete(&name)?;
-        let now = iso_now();
-        let mut db = lock(&self.db);
-        if codex_session::is_canonical_mailbox(&name) {
-            Self::require_registered_codex(&db, &name)?;
-            codex_session::touch(&mut db, &name, None)?;
-            db.execute(
-                "UPDATE agents SET online = ?1, presence_at = ?2 WHERE name = ?3",
-                params![i64::from(online), now, name],
-            )?;
-            return Ok(());
-        }
-        db.execute(
-            "INSERT INTO agents(name, first_seen, last_seen, online, presence_at) VALUES (?1, ?2, ?2, ?3, ?2)
-             ON CONFLICT(name) DO UPDATE SET online = ?3, presence_at = ?2, last_seen = ?2",
-            params![name, now, i64::from(online)],
+    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    pub fn set_presence(
+        &self,
+        caller: &Caller,
+        name_raw: &str,
+        online: bool,
+    ) -> Result<(), BridgeError> {
+        let name = self.acting_mailbox(caller, name_raw, "agent")?;
+        lock(&self.db).execute(
+            "UPDATE agents SET online = ?1, presence_at = ?2 WHERE name = ?3",
+            params![i64::from(online), iso_now(), name],
         )?;
         Ok(())
     }
@@ -1211,54 +1242,48 @@ impl Bridge {
         })
     }
 
-    /// Past messages, oldest first, filtered to the visible mailboxes.
+    /// Past messages, oldest first.
+    ///
+    /// A session sees its own mail: what it sent and what was delivered to it. Routing keeps every
+    /// message of a team between the lead and one member, so a lead sees its whole team. Only the
+    /// admin token, without a viewer, sees every message.
     ///
     /// # Errors
-    /// Returns SQLite errors.
+    /// Returns an error for a non-admin caller without a viewer, a caller that cannot act as the
+    /// viewer, or SQLite.
     pub fn history(
         &self,
+        caller: &Caller,
+        viewer: Option<&str>,
         limit: u32,
         before_id: Option<i64>,
-        visible: Option<&[String]>,
     ) -> Result<History, BridgeError> {
+        let viewer = match viewer {
+            Some(raw) => Some(self.acting_mailbox(caller, raw, "for")?),
+            None if caller.auth.admin => None,
+            None => return Err(BridgeError::ViewerRequired),
+        };
         let capped = i64::from(limit.clamp(1, MAX_HISTORY));
+        let before = before_id.unwrap_or(i64::MAX);
         let db = lock(&self.db);
-        let rows = match before_id {
-            Some(before) => message_rows(
-                &db,
-                "SELECT id, sender, recipient, content, created_at, sender_role FROM messages WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
-                params![before, capped],
-            )?,
-            None => message_rows(
-                &db,
-                "SELECT id, sender, recipient, content, created_at, sender_role FROM messages ORDER BY id DESC LIMIT ?1",
-                params![capped],
-            )?,
-        };
-        let is_visible = |sender: &str, recipient: &str| {
-            visible.is_none_or(|patterns| {
-                patterns.iter().any(|p| {
-                    agent_matches_pattern(sender, p) || agent_matches_pattern(recipient, p)
-                })
-            })
-        };
-        let mut messages: Vec<MessageRow> = rows
-            .into_iter()
-            .filter(|row| is_visible(&row.sender, &row.recipient))
-            .collect();
+        let mut messages = message_rows(
+            &db,
+            &format!(
+                "SELECT m.id, m.sender, m.recipient, m.content, m.created_at, m.sender_role
+                 FROM messages m WHERE m.id < ?2 AND {VIEWER_MAIL_SQL} ORDER BY m.id DESC LIMIT ?3"
+            ),
+            params![viewer, before, capped],
+        )?;
         messages.reverse();
-        let mut statement = db.prepare("SELECT sender, recipient FROM messages")?;
-        let pairs = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let mut total = 0;
-        for pair in pairs {
-            let (sender, recipient) = pair?;
-            if is_visible(&sender, &recipient) {
-                total += 1;
-            }
-        }
-        Ok(History { messages, total })
+        let total: i64 = db.query_row(
+            &format!("SELECT COUNT(*) FROM messages m WHERE {VIEWER_MAIL_SQL}"),
+            params![viewer],
+            |row| row.get(0),
+        )?;
+        Ok(History {
+            messages,
+            total: usize::try_from(total).unwrap_or(0),
+        })
     }
 
     fn all_members(db: &Connection) -> rusqlite::Result<HashMap<String, (String, Role)>> {
@@ -1278,16 +1303,18 @@ impl Bridge {
     /// Agents, presence, roles, unread counts and the last wakes.
     ///
     /// With a `viewer`, the list holds only the viewer's team, or only the viewer when it is solo.
-    /// Without one (the admin view), it holds every agent.
+    /// Only the admin token may omit the viewer, and it then sees every agent.
     ///
     /// # Errors
-    /// Returns SQLite errors.
-    pub fn status(
-        &self,
-        viewer: Option<&str>,
-        visible: Option<&[String]>,
-        wake_visible: Option<&[String]>,
-    ) -> Result<Status, BridgeError> {
+    /// Returns an error for a non-admin caller without a viewer, a caller that cannot act as the
+    /// viewer, or SQLite.
+    pub fn status(&self, caller: &Caller, viewer_raw: Option<&str>) -> Result<Status, BridgeError> {
+        let viewer = match viewer_raw {
+            Some(raw) => Some(self.acting_mailbox(caller, raw, "from")?),
+            None if caller.auth.admin => None,
+            None => return Err(BridgeError::ViewerRequired),
+        };
+        let viewer = viewer.as_deref();
         let (members, names) = {
             let db = lock(&self.db);
             let members = Self::all_members(&db)?;
@@ -1318,11 +1345,6 @@ impl Bridge {
                 if name != viewer && !same_team {
                     continue;
                 }
-            }
-            if visible
-                .is_some_and(|patterns| !patterns.iter().any(|p| agent_matches_pattern(&name, p)))
-            {
-                continue;
             }
             let presence = self.presence_of(&name)?;
             let waiting_now = lock(&self.listeners).waits.contains_key(&name);
@@ -1364,7 +1386,7 @@ impl Bridge {
                 unread,
             });
         }
-        let last_wakes = self.last_wakes(viewer.is_some(), &agents, wake_visible)?;
+        let last_wakes = self.last_wakes(viewer.is_some(), &agents)?;
         Ok(Status {
             daemon: "inband",
             started_at: self.started_at.clone(),
@@ -1380,7 +1402,6 @@ impl Bridge {
         &self,
         team_view: bool,
         agents: &[AgentStatus],
-        wake_visible: Option<&[String]>,
     ) -> Result<Vec<WakeRecord>, BridgeError> {
         let wakes = {
             let db = lock(&self.db);
@@ -1400,23 +1421,19 @@ impl Bridge {
                 .filter(|wake| {
                     !team_view || agents.iter().any(|agent| agent.name == wake.recipient)
                 })
-                .filter(|wake| {
-                    wake_visible.is_none_or(|patterns| {
-                        patterns
-                            .iter()
-                            .any(|p| agent_matches_pattern(&wake.recipient, p))
-                    })
-                })
                 .collect()
         };
         Ok(wakes)
     }
 
-    /// Deletes all messages and deliveries. The audit log stays.
+    /// Deletes all messages and deliveries, for the admin token only. The audit log stays.
     ///
     /// # Errors
-    /// Returns an error without `confirm == "wipe"`, or SQLite.
-    pub fn clear(&self, confirm: &str) -> Result<usize, BridgeError> {
+    /// Returns an error for a non-admin caller, without `confirm == "wipe"`, or SQLite.
+    pub fn clear(&self, caller: &Caller, confirm: &str) -> Result<usize, BridgeError> {
+        if !caller.auth.admin {
+            return Err(BridgeError::AdminRequired);
+        }
         if confirm != "wipe" {
             return Err(BridgeError::ClearNotConfirmed);
         }
@@ -1620,16 +1637,22 @@ impl Bridge {
         Ok(())
     }
 
-    /// Registers a Codex session, for the Codex hook.
+    /// Registers a Codex session, for the Codex hook of that session.
     ///
     /// # Errors
-    /// Returns an error for an invalid session id or SQLite.
+    /// Returns an error for an invalid session id, a caller signed for another session, or SQLite.
     pub fn register_codex(
         &self,
+        caller: &Caller,
         session_id: &str,
         cwd: &str,
         lifecycle: &str,
     ) -> Result<codex_session::CodexSession, BridgeError> {
+        let mailbox = codex_session::canonical_mailbox(session_id)?;
+        if !caller.auth.admin {
+            Self::require_token_scope(caller, "mailbox", &mailbox)?;
+            Self::require_owner_session(caller, &mailbox)?;
+        }
         Ok(codex_session::register(
             &mut lock(&self.db),
             session_id,
@@ -1638,12 +1661,20 @@ impl Bridge {
         )?)
     }
 
+    /// Records the lifecycle of a registered Codex session, for the Codex hook of that session.
+    ///
     /// # Errors
-    /// Returns SQLite errors.
-    pub fn touch_codex(&self, mailbox: &str, lifecycle: Option<&str>) -> Result<(), BridgeError> {
+    /// Returns an error for a caller that cannot act as the mailbox, or SQLite.
+    pub fn touch_codex(
+        &self,
+        caller: &Caller,
+        mailbox_raw: &str,
+        lifecycle: Option<&str>,
+    ) -> Result<(), BridgeError> {
+        let mailbox = self.acting_mailbox(caller, mailbox_raw, "mailbox")?;
         Ok(codex_session::touch(
             &mut lock(&self.db),
-            mailbox,
+            &mailbox,
             lifecycle,
         )?)
     }

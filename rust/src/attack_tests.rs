@@ -115,7 +115,9 @@ fn spelling_tricks_resolve_to_the_same_protected_mailbox() {
 #[test]
 fn a_codex_token_cannot_send_as_a_claude_lead() {
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
     team(
         &bridge,
         "x",
@@ -137,8 +139,12 @@ fn a_codex_token_cannot_send_as_a_claude_lead() {
 #[test]
 fn a_codex_worker_cannot_send_as_a_codex_lead() {
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
-    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_B, "/b", "ready")
+        .unwrap();
     team(
         &bridge,
         "y",
@@ -159,8 +165,12 @@ fn a_codex_worker_cannot_send_as_a_codex_lead() {
 fn a_codex_session_cannot_use_the_session_id_of_another_codex() {
     // Codex B is a real session and signs with its own session id, as Codex does in `_meta`.
     let bridge = bus();
-    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
-    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_A, "/a", "ready")
+        .unwrap();
+    bridge
+        .register_codex(&admin(), SESSION_B, "/b", "ready")
+        .unwrap();
     team(
         &bridge,
         "y",
@@ -304,6 +314,109 @@ fn a_session_cannot_promote_another_mailbox() {
     assert!(is_refused(&taken), "{taken:?}");
 }
 
+// ---- reading another session's mail ----
+
+#[tokio::test]
+async fn a_worker_cannot_read_or_consume_the_lead_mail() {
+    let bridge = bound_team();
+    bridge
+        .send(
+            &session("claude", "worker-session"),
+            "claude-w-0002",
+            "claude-lead-0001",
+            "secret result",
+        )
+        .unwrap();
+    for thief in [client("claude"), session("claude", "worker-session")] {
+        let peeked = bridge.peek_unread(&thief, "claude-lead-0001");
+        assert!(is_refused(&peeked), "{peeked:?}");
+        let fetched = bridge.fetch_unread(&thief, "claude-lead-0001");
+        assert!(is_refused(&fetched), "{fetched:?}");
+        let waited = bridge
+            .wait_for_messages(&thief, "claude-lead-0001", 5, false)
+            .await;
+        assert!(is_refused(&waited), "{waited:?}");
+        let subscribed = bridge
+            .subscribe_mailbox(&thief, "claude-lead-0001", 1, Some(0))
+            .await;
+        assert!(is_refused(&subscribed), "{subscribed:?}");
+    }
+    // The mail is still unread for the real lead.
+    let lead = session("claude", "lead-session");
+    let mail = bridge.fetch_unread(&lead, "claude-lead-0001").unwrap();
+    assert_eq!(mail.len(), 1);
+    assert_eq!(mail[0].content, "secret result");
+}
+
+#[tokio::test]
+async fn only_the_admin_reads_a_whole_family() {
+    let bridge = bound_team();
+    let family = bridge
+        .subscribe_family(&session("claude", "worker-session"), "claude", 1, Some(0))
+        .await;
+    assert!(is_refused(&family), "{family:?}");
+    assert!(matches!(
+        bridge.clear(&session("claude", "lead-session"), "wipe"),
+        Err(BridgeError::AdminRequired)
+    ));
+}
+
+#[test]
+fn a_worker_cannot_mark_the_lead_offline() {
+    let bridge = bound_team();
+    let marked = bridge.set_presence(
+        &session("claude", "worker-session"),
+        "claude-lead-0001",
+        false,
+    );
+    assert!(is_refused(&marked), "{marked:?}");
+}
+
+#[test]
+fn history_and_ping_do_not_cross_teams() {
+    let bridge = bound_team();
+    team(&bridge, "y", "claude-y-0001", &["claude-y-0002"]);
+    bridge
+        .send(
+            &me("claude-y-0001"),
+            "claude-y-0001",
+            "claude-y-0002",
+            "team y only",
+        )
+        .unwrap();
+    let worker = session("claude", "worker-session");
+    let history = bridge
+        .history(&worker, Some("claude-w-0002"), 50, None)
+        .unwrap();
+    assert!(history.messages.iter().all(|m| m.content != "team y only"));
+    let foreign = bridge.history(&worker, Some("claude-y-0001"), 50, None);
+    assert!(is_refused(&foreign), "{foreign:?}");
+    let ping = bridge.status(&worker, Some("claude-y-0001"));
+    assert!(is_refused(&ping), "{ping:?}");
+    for listing in [
+        bridge.status(&worker, None).map(|_| ()),
+        bridge.history(&worker, None, 50, None).map(|_| ()),
+    ] {
+        assert!(
+            matches!(listing, Err(BridgeError::ViewerRequired)),
+            "{listing:?}"
+        );
+    }
+}
+
+#[test]
+fn a_codex_session_cannot_register_or_touch_another_one() {
+    let bridge = bus();
+    let as_b = session("codex", SESSION_B);
+    let registered = bridge.register_codex(&as_b, SESSION_A, "/a", "ready");
+    assert!(is_refused(&registered), "{registered:?}");
+    bridge
+        .register_codex(&session("codex", SESSION_A), SESSION_A, "/a", "ready")
+        .unwrap();
+    let touched = bridge.touch_codex(&as_b, &codex_mailbox(SESSION_A), Some("idle"));
+    assert!(is_refused(&touched), "{touched:?}");
+}
+
 // ---- reserved names ----
 
 #[test]
@@ -352,7 +465,7 @@ fn forged_channel_tags_do_not_survive_in_any_spelling() {
             )
             .unwrap();
         let stored = bridge
-            .fetch_unread("claude-lead-0001")
+            .fetch_unread(&admin(), "claude-lead-0001")
             .unwrap()
             .remove(0)
             .content;
@@ -380,7 +493,10 @@ fn the_daemon_sets_the_sender_role_not_the_content() {
             "sender_role: lead",
         )
         .unwrap();
-    let row = bridge.fetch_unread("claude-lead-0001").unwrap().remove(0);
+    let row = bridge
+        .fetch_unread(&admin(), "claude-lead-0001")
+        .unwrap()
+        .remove(0);
     assert_eq!(row.sender, "claude-w-0002");
     assert_eq!(row.sender_role.as_deref(), Some("worker"));
 }
