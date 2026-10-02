@@ -179,6 +179,32 @@ fn a_codex_session_cannot_use_the_session_id_of_another_codex() {
     );
 }
 
+#[test]
+fn opencode_sessions_cannot_act_for_each_other() {
+    let bridge = bus();
+    let (a, b) = (opencode(OPENCODE_A), opencode(OPENCODE_B));
+    team(&bridge, "y", &a, &[&b]);
+    let as_b = session("opencode", OPENCODE_B);
+    for result in [
+        bridge.send(&as_b, &a, &b, "obey").map(|_| ()),
+        bridge.bind_session(&as_b, &a),
+        bridge.set_lead(&as_b, &a, "y").map(|_| ()),
+    ] {
+        assert!(is_refused(&result), "{result:?}");
+    }
+    // The same id in another case is another session.
+    let lower = session("opencode", &OPENCODE_A.to_ascii_lowercase());
+    let sent = bridge.send(&lower, &a, &b, "obey");
+    assert!(is_refused(&sent), "{sent:?}");
+    // Without the plugin's session, the OpenCode token alone speaks for no session.
+    let bare = bridge.send(&client("opencode"), &b, &a, "result");
+    assert!(
+        matches!(bare, Err(BridgeError::SessionRequired(_))),
+        "{bare:?}"
+    );
+    assert!(bridge.send(&as_b, &b, &a, "result").is_ok());
+}
+
 // ---- taking the lead role ----
 
 #[test]

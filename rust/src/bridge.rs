@@ -14,6 +14,7 @@ use crate::auth::{AuthInfo, agent_matches_pattern};
 use crate::codex_session::{self, CODEX_FAMILY, CodexSessionError};
 use crate::config::{BridgeConfig, WakeTarget, is_agent_name};
 use crate::db::{iso, iso_now};
+use crate::opencode_session;
 use crate::protocol::Role;
 use crate::sanitize::{contains_token, sanitize};
 use crate::wake::{WakeDispatch, WakeInput, WakeResult};
@@ -423,8 +424,8 @@ impl Bridge {
             .session
             .clone()
             .ok_or_else(|| BridgeError::SessionRequired(mailbox.clone()))?;
-        if let Some(owner) = Self::codex_owner(&mailbox) {
-            Self::require_codex_session(caller, &mailbox, owner)?;
+        if Self::session_owned(&mailbox) {
+            Self::require_owner_session(caller, &mailbox)?;
         }
         let now = iso_now();
         let mut db = lock(&self.db);
@@ -443,22 +444,28 @@ impl Bridge {
         Ok(())
     }
 
-    /// The session that owns a `codex-<uuid>` mailbox: its uuid is the Codex session id.
-    fn codex_owner(mailbox: &str) -> Option<&str> {
-        mailbox
-            .strip_prefix("codex-")
-            .filter(|_| codex_session::is_canonical_mailbox(mailbox))
+    /// True for a mailbox whose name says which session owns it: `codex-<session uuid>`, or
+    /// `opencode-<digest of the session id>`.
+    fn session_owned(mailbox: &str) -> bool {
+        codex_session::is_canonical_mailbox(mailbox)
+            || opencode_session::is_session_mailbox(mailbox)
     }
 
-    /// Codex puts the calling session in the `_meta.sessionId` of every tool call. The model cannot
-    /// write `_meta`, so a request for `codex-<uuid>` must carry exactly that session id.
-    fn require_codex_session(
-        caller: &Caller,
-        mailbox: &str,
-        owner: &str,
-    ) -> Result<(), BridgeError> {
+    fn session_owns(session: &str, mailbox: &str) -> bool {
+        match mailbox.strip_prefix("codex-") {
+            Some(uuid) if codex_session::is_canonical_mailbox(mailbox) => {
+                session.eq_ignore_ascii_case(uuid)
+            }
+            _ => opencode_session::owns(session, mailbox),
+        }
+    }
+
+    /// Codex puts the calling session in the `_meta.sessionId` of every tool call, and OpenCode gives
+    /// it to the tools of the InBand plugin. The model cannot write either, so a request for a
+    /// session-owned mailbox must carry the session that owns it.
+    fn require_owner_session(caller: &Caller, mailbox: &str) -> Result<(), BridgeError> {
         match caller.session.as_deref() {
-            Some(session) if session.eq_ignore_ascii_case(owner) => Ok(()),
+            Some(session) if Self::session_owns(session, mailbox) => Ok(()),
             Some(_) => Err(BridgeError::BoundToOtherSession(mailbox.to_owned())),
             None => Err(BridgeError::SessionRequired(mailbox.to_owned())),
         }
@@ -500,8 +507,8 @@ impl Bridge {
             return Ok(());
         }
         Self::require_token_scope(caller, field, mailbox)?;
-        if let Some(owner) = Self::codex_owner(mailbox) {
-            return Self::require_codex_session(caller, mailbox, owner);
+        if Self::session_owned(mailbox) {
+            return Self::require_owner_session(caller, mailbox);
         }
         match Self::bound_session(db, mailbox)? {
             Some(bound) if caller.session.as_deref() == Some(bound.as_str()) => Ok(()),

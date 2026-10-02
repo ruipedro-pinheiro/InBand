@@ -121,10 +121,23 @@ fn session(id: &str, key: &str) -> Caller {
 }
 
 /// A request signed by the session that `team` binds to `mailbox`.
-/// Codex mailboxes are `codex-<session id>`, so their session is the uuid itself.
+const OPENCODE_A: &str = "ses_f0311d340ffenkofYtqi2xYpYM";
+const OPENCODE_B: &str = "ses_f0311cbe0ffeG0O324fYguvGxb";
+
+fn opencode(session_id: &str) -> String {
+    crate::opencode_session::mailbox(session_id).unwrap()
+}
+
+/// A request signed by the session that owns `mailbox`. Codex mailboxes are `codex-<session id>`,
+/// and OpenCode mailboxes are digests of the test sessions above.
 fn me(mailbox: &str) -> Caller {
     if let Some(uuid) = mailbox.strip_prefix("codex-") {
         return session("codex", uuid);
+    }
+    for id in [OPENCODE_A, OPENCODE_B] {
+        if opencode(id) == mailbox {
+            return session("opencode", id);
+        }
     }
     let family = mailbox.split('-').next().unwrap_or(mailbox);
     session(family, &format!("s-{mailbox}"))
@@ -798,6 +811,28 @@ fn ping_shows_only_the_viewer_team() {
     assert_eq!(solo.lead, None);
 
     assert_eq!(bridge.status(None, None, None).unwrap().agents.len(), 5);
+}
+
+#[test]
+fn several_opencode_sessions_work_in_separate_teams() {
+    let bridge = bus();
+    let (a, b) = (opencode(OPENCODE_A), opencode(OPENCODE_B));
+    team(&bridge, "x", "claude-x-0001", &[&a]);
+    team(&bridge, "y", "claude-y-0001", &[&b]);
+    assert!(
+        bridge
+            .send(&me(&a), &a, "claude-x-0001", "x result")
+            .is_ok()
+    );
+    assert!(
+        bridge
+            .send(&me(&b), &b, "claude-y-0001", "y result")
+            .is_ok()
+    );
+    assert!(matches!(
+        bridge.send(&me(&a), &a, "claude-y-0001", "cross"),
+        Err(BridgeError::Routing(_))
+    ));
 }
 
 #[test]
