@@ -1,3 +1,6 @@
+//! @file client_tests.rs
+//! @brief The tests of the client of the daemon.
+
 use serde_json::json;
 
 use super::*;

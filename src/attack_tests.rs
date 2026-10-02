@@ -1,12 +1,11 @@
-//! Attacks from an agent that follows injected instructions. Each test asserts that the attack fails.
+//! @file attack_tests.rs
+//! @brief Attacks of one session against another: the impersonation of the lead, the theft of a mailbox, the read of the mail of another session.
 //!
-//! The attacker holds the token of its client family, as every MCP session does, and calls the bridge
-//! with any arguments it likes. It cannot sign a request for another session.
+//! @details Each test does one attack that a prompt injection can cause, and makes sure that the bus refuses it.
 
 use super::*;
 
-/// A team `x` whose lead `claude-lead-0001` is bound to the session `lead-session`, and whose worker
-/// `claude-w-0002` is bound to `worker-session`. Both joined through their own signed sessions.
+/// @brief Makes team `x`: the lead `claude-lead-0001` with the session `lead-session`, and the worker `claude-w-0002` with the session `worker-session`.
 fn bound_team() -> Arc<Bridge> {
     let bridge = bus();
     bridge
@@ -24,6 +23,7 @@ fn bound_team() -> Arc<Bridge> {
     bridge
 }
 
+/// @brief Tells if the bus refused an operation for a reason of identity or routing.
 fn is_refused<T: std::fmt::Debug>(result: &Result<T, BridgeError>) -> bool {
     matches!(
         result,
@@ -33,8 +33,6 @@ fn is_refused<T: std::fmt::Debug>(result: &Result<T, BridgeError>) -> bool {
             | BridgeError::SessionRequired(_))
     )
 }
-
-// ---- impersonating the lead ----
 
 #[test]
 fn mcp_caller_cannot_send_as_a_bound_lead() {
@@ -60,16 +58,18 @@ fn another_session_cannot_send_as_a_bound_lead() {
     assert!(is_refused(&sent), "{sent:?}");
 }
 
+/// @brief A worker names an unbound lead as the sender.
+///
+/// @details The hook of the lead never bound it, for example a v1 client. The user added it to the team with the CLI.
+/// The worker signs with its own real session.
 #[test]
 fn a_worker_cannot_send_as_an_unbound_lead() {
-    // A lead whose hook never bound it, for example a v1 client. The user added it with the CLI.
     let bridge = bus();
     for worker in ["claude-w-0002", "claude-w-0003"] {
         bridge.bind_session(&me(worker), worker).unwrap();
         bridge.join(&me(worker), worker, "x").unwrap();
     }
     bridge.set_lead(&admin(), "claude-lead-0001", "x").unwrap();
-    // The worker signs with its own real session, and names the lead as sender.
     let sent = bridge.send(
         &me("claude-w-0002"),
         "claude-lead-0001",
@@ -82,10 +82,11 @@ fn a_worker_cannot_send_as_an_unbound_lead() {
     );
 }
 
+/// @brief A Codex token signs a request for the session of the Claude lead.
+///
+/// @details Each client signs the session with its own token. A Codex token that knows the session id of the Claude lead must still not act for a Claude mailbox.
 #[test]
 fn a_session_claim_from_another_family_is_refused() {
-    // Session claims are signed with the family token. A Codex token that learns the session key
-    // of the Claude lead must still not act as a Claude mailbox.
     let bridge = bound_team();
     let sent = bridge.send(
         &session("codex", "lead-session"),
@@ -136,6 +137,7 @@ fn a_codex_token_cannot_send_as_a_claude_lead() {
     );
 }
 
+/// @brief The Codex session B names the Codex lead A as the sender.
 #[test]
 fn a_codex_worker_cannot_send_as_a_codex_lead() {
     let bridge = bus();
@@ -151,7 +153,6 @@ fn a_codex_worker_cannot_send_as_a_codex_lead() {
         &codex_mailbox(SESSION_A),
         &[&codex_mailbox(SESSION_B), "opencode"],
     );
-    // The attacker is the Codex session B. It names the lead A as sender.
     let sent = bridge.send(
         &client("codex"),
         &codex_mailbox(SESSION_A),
@@ -161,9 +162,9 @@ fn a_codex_worker_cannot_send_as_a_codex_lead() {
     assert!(is_refused(&sent), "Codex lead spoof went through: {sent:?}");
 }
 
+/// @brief Codex B, a real session, signs with its own session id, as Codex does in `_meta`, and names Codex A as the sender.
 #[test]
 fn a_codex_session_cannot_use_the_session_id_of_another_codex() {
-    // Codex B is a real session and signs with its own session id, as Codex does in `_meta`.
     let bridge = bus();
     bridge
         .register_codex(&admin(), SESSION_A, "/a", "ready")
@@ -189,6 +190,10 @@ fn a_codex_session_cannot_use_the_session_id_of_another_codex() {
     );
 }
 
+/// @brief `OpenCode` sessions cannot act for each other.
+///
+/// @details The same id with a different case is a different session.
+/// Without the session of the plugin, the `OpenCode` token alone acts for no session.
 #[test]
 fn opencode_sessions_cannot_act_for_each_other() {
     let bridge = bus();
@@ -202,11 +207,9 @@ fn opencode_sessions_cannot_act_for_each_other() {
     ] {
         assert!(is_refused(&result), "{result:?}");
     }
-    // The same id in another case is another session.
     let lower = session("opencode", &OPENCODE_A.to_ascii_lowercase());
     let sent = bridge.send(&lower, &a, &b, "obey");
     assert!(is_refused(&sent), "{sent:?}");
-    // Without the plugin's session, the OpenCode token alone speaks for no session.
     let bare = bridge.send(&client("opencode"), &b, &a, "result");
     assert!(
         matches!(bare, Err(BridgeError::SessionRequired(_))),
@@ -214,8 +217,6 @@ fn opencode_sessions_cannot_act_for_each_other() {
     );
     assert!(bridge.send(&as_b, &b, &a, "result").is_ok());
 }
-
-// ---- taking the lead role ----
 
 #[test]
 fn mcp_caller_cannot_take_the_lead() {
@@ -248,10 +249,12 @@ fn mcp_caller_cannot_move_itself_or_others_between_teams() {
     assert_eq!(bridge.role_of("claude-w-0002").unwrap(), Role::Worker);
 }
 
+/// @brief A session binds the mailbox of the lead to itself, then speaks as the lead.
+///
+/// @details The bus refuses the binding, and the real lead keeps its mailbox.
 #[test]
 fn a_session_cannot_steal_the_binding_of_the_lead() {
     let bridge = bound_team();
-    // The attacker registers the lead's mailbox for its own session, then speaks as the lead.
     let rebound = bridge.bind_session(&session("claude", "evil-session"), "claude-lead-0001");
     let sent = bridge.send(
         &session("claude", "evil-session"),
@@ -264,7 +267,6 @@ fn a_session_cannot_steal_the_binding_of_the_lead() {
         "{rebound:?}"
     );
     assert!(is_refused(&sent), "binding hijack: {sent:?}");
-    // The real lead keeps its mailbox.
     assert!(
         bridge
             .send(
@@ -277,10 +279,12 @@ fn a_session_cannot_steal_the_binding_of_the_lead() {
     );
 }
 
+/// @brief The `OpenCode` token alone cannot change a team.
+///
+/// @details An `OpenCode` slash command is a prompt, and a model can also run it. The token of the client names one mailbox.
+/// Without a signed session, only the admin token of the user can change the team.
 #[test]
 fn the_opencode_model_cannot_change_its_team() {
-    // OpenCode slash commands are prompts that the model runs, and its token names one mailbox.
-    // Without a signed session, only the admin token of the user's CLI may move it.
     let bridge = bound_team();
     let opencode = Caller {
         auth: AuthInfo {
@@ -305,17 +309,19 @@ fn the_opencode_model_cannot_change_its_team() {
     );
 }
 
+/// @brief A session sends `/lead` for a mailbox that is bound to another session.
+///
+/// @details `/lead` is a request signed by the session that becomes the lead. A session must not sign it for the mailbox of another session.
 #[test]
 fn a_session_cannot_promote_another_mailbox() {
-    // /lead itself is a request signed by the session that becomes lead. A session must not be able
-    // to sign it for a mailbox bound to another session.
     let bridge = bound_team();
     let taken = bridge.set_lead(&session("claude", "lead-session"), "claude-w-0002", "x");
     assert!(is_refused(&taken), "{taken:?}");
 }
 
-// ---- reading another session's mail ----
-
+/// @brief A worker tries to read the mail of the lead.
+///
+/// @details The bus refuses it, and the mail stays unread for the real lead.
 #[tokio::test]
 async fn a_worker_cannot_read_or_consume_the_lead_mail() {
     let bridge = bound_team();
@@ -341,7 +347,6 @@ async fn a_worker_cannot_read_or_consume_the_lead_mail() {
             .await;
         assert!(is_refused(&subscribed), "{subscribed:?}");
     }
-    // The mail is still unread for the real lead.
     let lead = session("claude", "lead-session");
     let mail = bridge.fetch_unread(&lead, "claude-lead-0001").unwrap();
     assert_eq!(mail.len(), 1);
@@ -417,8 +422,6 @@ fn a_codex_session_cannot_register_or_touch_another_one() {
     assert!(is_refused(&touched), "{touched:?}");
 }
 
-// ---- reserved names ----
-
 #[test]
 fn reserved_names_cannot_become_members() {
     let bridge = bus();
@@ -433,8 +436,6 @@ fn reserved_names_cannot_become_members() {
         );
     }
 }
-
-// ---- forging the lead in the content ----
 
 #[test]
 fn forged_channel_tags_do_not_survive_in_any_spelling() {

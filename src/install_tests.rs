@@ -1,15 +1,19 @@
+//! @file install_tests.rs
+//! @brief The tests of the installer, in a temporary home directory, with fake client programs.
+
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use super::*;
 
-/// Finds the programs it was given, and records every command.
+/// @brief Finds only the programs that the test gives, and keeps each command.
 struct FakeRunner {
     programs: BTreeSet<&'static str>,
     calls: RefCell<Vec<String>>,
 }
 
 impl FakeRunner {
+    /// @brief Makes a fake runner that finds these programs.
     fn new(programs: &[&'static str]) -> Self {
         Self {
             programs: programs.iter().copied().collect(),
@@ -17,18 +21,21 @@ impl FakeRunner {
         }
     }
 
+    /// @brief Gives the commands that the installer ran.
     fn calls(&self) -> Vec<String> {
         self.calls.borrow().clone()
     }
 }
 
 impl Runner for FakeRunner {
+    /// @brief Gives `/usr/bin/<program>` for a known program.
     fn find(&self, program: &str) -> Option<PathBuf> {
         self.programs
             .contains(program)
             .then(|| PathBuf::from(format!("/usr/bin/{program}")))
     }
 
+    /// @brief Keeps the command, and tells that it succeeded.
     fn run(&self, program: &Path, args: &[&str]) -> (bool, String) {
         self.calls
             .borrow_mut()
@@ -37,6 +44,7 @@ impl Runner for FakeRunner {
     }
 }
 
+/// @brief Makes a home directory with the configuration directories of the three clients.
 fn home(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("inband-install-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -47,6 +55,7 @@ fn home(name: &str) -> PathBuf {
     dir
 }
 
+/// @brief Gives the install options for a home directory.
 fn options(home: &Path, client_only: bool) -> InstallOptions {
     InstallOptions {
         home: home.to_owned(),
@@ -57,15 +66,17 @@ fn options(home: &Path, client_only: bool) -> InstallOptions {
     }
 }
 
+/// @brief Reads a JSON file.
 fn json_file(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// @brief Gives the permission bits of a file.
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
-/// The commands of every hook of one event.
+/// @brief Gives the commands of all the hooks of one event.
 fn commands(settings: &Value, event: &str) -> Vec<String> {
     settings["hooks"][event]
         .as_array()
@@ -76,6 +87,7 @@ fn commands(settings: &Value, event: &str) -> Vec<String> {
         .collect()
 }
 
+/// @brief Gives the install directory of a home directory.
 fn data(home: &Path) -> PathBuf {
     home.join(".local/share/mcp-servers/inband")
 }
@@ -163,12 +175,13 @@ fn a_fresh_install_sets_up_the_daemon_and_every_client() {
     assert!(calls.contains(&"/usr/bin/systemctl --user restart inband".to_owned()));
 }
 
+/// @brief Writes a file and creates its directory.
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
 }
 
-/// A v1 install, with hooks and files of the user next to it.
+/// @brief Makes a v1 install, with hooks and files of the user near it.
 fn v1_install(home: &Path) {
     let data = data(home);
     write(

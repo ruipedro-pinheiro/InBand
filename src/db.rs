@@ -1,4 +1,8 @@
-//! SQLite storage: the v1 schema, plus the session bindings and the audit log of v2.
+//! @file db.rs
+//! @brief The `SQLite` database: messages, deliveries, agents, sessions, teams and the audit log.
+//!
+//! @details The schema of v1 stays, so v2 can open a v1 database.
+//! v2 adds tables for the session bindings, the teams and the audit log.
 
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -8,6 +12,7 @@ use std::time::SystemTime;
 
 use rusqlite::Connection;
 
+/// @brief The errors of the database.
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("cannot prepare the database file {path}: {source}")]
@@ -16,6 +21,9 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
 }
 
+/// @brief The tables of the database.
+///
+/// @details Each table is created only when it does not exist.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,17 +100,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_members_one_lead
   ON members(team) WHERE role = 'lead';
 ";
 
-/// The current time in the ISO 8601 format of the v1 daemon, for example `2026-10-01T22:07:59.392Z`.
+/// @brief Gives the current time as text.
+///
+/// @return The time in the ISO 8601 format of v1, for example `2026-10-01T22:07:59.392Z`.
 #[must_use]
 pub fn iso_now() -> String {
     iso(SystemTime::now())
 }
 
+/// @brief Gives a time as text, in the ISO 8601 format of v1.
 #[must_use]
 pub fn iso(time: SystemTime) -> String {
     humantime::format_rfc3339_millis(time).to_string()
 }
 
+/// @brief Creates the database file with mode 600, or sets mode 600 on it.
+///
+/// @details The database contains all the mail. Other users must not read it.
 fn private_file(path: &Path) -> Result<(), DbError> {
     let file_error = |source| DbError::File {
         path: path.to_owned(),
@@ -120,6 +134,9 @@ fn private_file(path: &Path) -> Result<(), DbError> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(file_error)
 }
 
+/// @brief Applies the schema and the migrations to a connection.
+///
+/// @details A v1 database has no `sender_role` column. This function adds it.
 fn prepare(connection: &Connection) -> Result<(), DbError> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.execute_batch(SCHEMA)?;
@@ -134,10 +151,11 @@ fn prepare(connection: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-/// Opens or creates the database with mode 600 and applies the schema and migrations.
+/// @brief Opens the database, and creates it when it does not exist.
 ///
-/// # Errors
-/// Returns an error when the file cannot be created or the schema cannot be applied.
+/// @param path The database file.
+/// @return The connection, with the schema and the migrations applied.
+/// @throws DbError The file cannot be created, or the schema cannot be applied.
 pub fn open(path: &Path) -> Result<Connection, DbError> {
     private_file(path)?;
     let connection = Connection::open(path)?;
@@ -159,10 +177,9 @@ pub fn open(path: &Path) -> Result<Connection, DbError> {
     Ok(connection)
 }
 
-/// An in-memory database with the full schema, for tests.
+/// @brief Opens a database in memory, for the tests.
 ///
-/// # Errors
-/// Returns an error when the schema cannot be applied.
+/// @throws DbError The schema cannot be applied.
 pub fn open_in_memory() -> Result<Connection, DbError> {
     let connection = Connection::open_in_memory()?;
     prepare(&connection)?;
@@ -173,6 +190,7 @@ pub fn open_in_memory() -> Result<Connection, DbError> {
 mod tests {
     use super::*;
 
+    /// @brief Makes an empty directory for a test.
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("inband-db-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -223,7 +241,6 @@ mod tests {
         assert_eq!(content, "old");
         assert_eq!(role, None);
         drop(connection);
-        // Opening twice must not fail on the existing column.
         open(&path).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }

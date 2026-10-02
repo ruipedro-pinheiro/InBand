@@ -1,7 +1,12 @@
-//! The HTTP server: the loopback guard, authentication, and the routes of the hooks and the shim.
+//! @file http.rs
+//! @brief The HTTP server of the daemon.
 //!
-//! Every request first passes the loopback guard, then authentication. The routes then call the
-//! bridge with the authenticated [`Caller`], and the bridge checks what that caller may do.
+//! @details Each request goes through three layers, in this order:
+//! 1. the loopback guard: only requests for this machine, and no request from a browser;
+//! 2. the authentication: a bearer token or a signature;
+//! 3. the route: it calls the bus with the authenticated [`Caller`].
+//!
+//! The bus then checks what this caller can do.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,20 +26,28 @@ use crate::bridge::{Bridge, BridgeError, Caller};
 use crate::codex_session;
 use crate::protocol::identity_text;
 
-/// Bodies above this size are refused before authentication reads them.
+/// @brief The maximum size of a request body.
+///
+/// @details The daemon refuses a larger body before it reads it for the authentication.
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// @brief The default time of a long poll.
 const DEFAULT_SUBSCRIBE_SECONDS: u64 = 55;
+/// @brief The host names that the daemon accepts.
 const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
+/// @brief The values of `source` in a Codex `SessionStart` hook.
 const SESSION_START_SOURCES: [&str; 4] = ["startup", "resume", "clear", "compact"];
 
+/// @brief The data that all the routes share.
 #[derive(Clone)]
 pub struct AppState {
     pub bridge: Arc<Bridge>,
     pub auth: Arc<AuthRuntime>,
 }
 
-/// The routes of the hooks and the shim, behind authentication and the loopback guard. `extra`
-/// holds routes that need the same protection, such as the MCP service.
+/// @brief Makes the routes of the hooks and of the shim, behind the authentication and the loopback guard.
+///
+/// @param state The bus and the authentication.
+/// @param extra More routes that need the same protection, for example the MCP endpoint.
 pub fn router(state: AppState, extra: Router) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -52,11 +65,14 @@ pub fn router(state: AppState, extra: Router) -> Router {
         .layer(from_fn(security_headers))
 }
 
+/// @brief Makes a JSON error answer.
 fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
-/// Maps a bridge refusal to an HTTP status. Storage errors stay in the daemon log.
+/// @brief Changes a refusal of the bus into an HTTP answer.
+///
+/// @details A database error stays in the log of the daemon. The client receives only "internal error".
 fn bridge_error(failure: &BridgeError) -> Response {
     let status = match failure {
         BridgeError::BoundToOtherSession(_)
@@ -77,6 +93,7 @@ fn bridge_error(failure: &BridgeError) -> Response {
     error(status, &failure.to_string())
 }
 
+/// @brief Adds headers that stop the browser cache and the content type guess.
 async fn security_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -88,7 +105,9 @@ async fn security_headers(request: Request, next: Next) -> Response {
     response
 }
 
-/// True for `127.0.0.1`, `localhost` or `[::1]`, with any port. Tunnels may forward another port.
+/// @brief Tells if a `Host` header names this machine.
+///
+/// @details The port can have any value, because a tunnel can forward another port.
 fn is_loopback_host(host: &str) -> bool {
     let name = match host.rsplit_once(':') {
         Some((name, port)) if !name.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
@@ -99,8 +118,11 @@ fn is_loopback_host(host: &str) -> bool {
         .any(|allowed| name.eq_ignore_ascii_case(allowed))
 }
 
-/// Refuses requests for another host name, which a DNS rebinding page sends, and every request that
-/// a browser marks with an `Origin`. Agents and hooks send neither.
+/// @brief Refuses the requests that a web page can send.
+///
+/// @details A web page can use DNS rebinding: it then sends requests with its own host name.
+/// A browser also adds an `Origin` header to its requests.
+/// The agents and the hooks send neither, so the guard refuses both.
 async fn loopback_guard(request: Request, next: Next) -> Response {
     let host_ok = request
         .headers()
@@ -116,6 +138,7 @@ async fn loopback_guard(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
+/// @brief Gives the current time in milliseconds.
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -124,8 +147,9 @@ fn now_ms() -> u64 {
         })
 }
 
-/// Checks the bearer token or the signature, and attaches the [`Caller`] to the request. The body
-/// is read here because the signature covers it, then put back for the route.
+/// @brief Checks the bearer token or the signature, and attaches the [`Caller`] to the request.
+///
+/// @details The signature covers the body. This layer thus reads the body, then gives it back to the route.
 async fn authenticate(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MAX_BODY_BYTES).await else {
@@ -176,8 +200,10 @@ async fn authenticate(State(state): State<AppState>, request: Request, next: Nex
     }
 }
 
-/// The admin token gets the full status. Other clients only learn that the daemon runs: their
-/// sessions see their team through `ping`.
+/// @brief Tells that the daemon runs.
+///
+/// @details The admin token receives the full status. The other clients receive only `ok`:
+/// their sessions see their team through `ping`.
 async fn health(State(state): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
     if !caller.auth.admin {
         return Json(
@@ -197,6 +223,7 @@ async fn health(State(state): State<AppState>, Extension(caller): Extension<Call
     }
 }
 
+/// @brief The query of a long poll: one mailbox, or a family prefix for the admin.
 #[derive(Deserialize)]
 struct SubscribeQuery {
     mailbox: Option<String>,
@@ -205,7 +232,9 @@ struct SubscribeQuery {
     after_id: Option<String>,
 }
 
-/// Long poll of the channel shim: the unread mail after `after_id`, or the next delivery.
+/// @brief The long poll of the shim.
+///
+/// @return The unread mail after `after_id`, or the next message, or nothing when the time ends.
 async fn subscribe(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -249,12 +278,14 @@ async fn subscribe(
     }
 }
 
+/// @brief The body of a presence request.
 #[derive(Deserialize)]
 struct PresenceBody {
     agent: String,
     online: bool,
 }
 
+/// @brief Keeps the online or offline state that the hooks of a session send.
 async fn presence(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -272,19 +303,23 @@ async fn presence(
     }
 }
 
+/// @brief The query of a Claude Code hook: the mailbox and the hook event.
 #[derive(Deserialize)]
 struct ClaudeHookQuery {
     agent: Option<String>,
     event: Option<String>,
 }
 
+/// @brief Makes a hook answer that adds text to the context of the session.
 fn hook_context(event: &str, text: &str) -> Response {
     Json(json!({ "hookSpecificOutput": { "hookEventName": event, "additionalContext": text } }))
         .into_response()
 }
 
-/// Output for the Claude Code hooks. At `SessionStart`, a request signed for a session also binds
-/// the mailbox to that session.
+/// @brief Answers the Claude Code hooks.
+///
+/// @details `SessionStart` gives the identity and the protocol. A request signed for a session also binds the mailbox to that session.
+/// `PostToolUse` tells a session that works that it has unread mail.
 async fn claude_hook(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -332,6 +367,7 @@ async fn claude_hook(
     }
 }
 
+/// @brief The JSON that Codex gives to its hooks.
 #[derive(Deserialize)]
 struct CodexHookBody {
     hook_event_name: String,
@@ -341,8 +377,11 @@ struct CodexHookBody {
     stop_hook_active: Option<bool>,
 }
 
-/// The Codex `SessionStart` and `Stop` hooks. The request must be signed for the session that the
-/// payload names.
+/// @brief Answers the Codex hooks.
+///
+/// @details `SessionStart` registers the session, and gives the identity and the protocol.
+/// `Stop` blocks the end of the turn once when the session has unread mail.
+/// The request must be signed for the session in the JSON.
 async fn codex_hook(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -418,12 +457,14 @@ async fn codex_hook(
     }
 }
 
+/// @brief The body of a team command.
 #[derive(Deserialize)]
 struct TeamBody {
     mailbox: String,
     team: Option<String>,
 }
 
+/// @brief Makes the answer of a team command: the change and the new protocol.
 fn team_reply(
     state: &AppState,
     caller: &Caller,
@@ -441,7 +482,7 @@ fn team_reply(
     }
 }
 
-/// `/lead <team>`, from the hook that sees what the user typed.
+/// @brief Runs `/lead <team>`. The hook that sees the prompt of the user sends this request.
 async fn team_lead(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -458,7 +499,7 @@ async fn team_lead(
     team_reply(&state, &caller, change)
 }
 
-/// `/join <team>`, from the hook that sees what the user typed.
+/// @brief Runs `/join <team>`. The hook that sees the prompt of the user sends this request.
 async fn team_join(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -475,7 +516,7 @@ async fn team_join(
     team_reply(&state, &caller, change)
 }
 
-/// `/solo`, from the hook that sees what the user typed.
+/// @brief Runs `/solo`. The hook that sees the prompt of the user sends this request.
 async fn team_leave(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,

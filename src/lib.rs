@@ -1,4 +1,7 @@
-//! Local MCP message bus for coding agents.
+//! @file lib.rs
+//! @brief InBand: a local message bus for coding agents.
+//!
+//! @details One daemon carries mail between Claude Code, Codex and `OpenCode` sessions.
 
 pub mod auth;
 pub mod bridge;

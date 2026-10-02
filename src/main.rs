@@ -1,4 +1,5 @@
-//! The `inband` binary.
+//! @file main.rs
+//! @brief The `inband` command: the daemon, the hooks, the shims, the `OpenCode` plugin side, and the installer.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -12,7 +13,7 @@ use inband::install;
 use inband::opencode_cli;
 use serde_json::Value;
 
-/// Hook payloads are small; anything larger is not one.
+/// @brief The maximum size of a hook input. A hook JSON is small, so a larger input is not one.
 const MAX_STDIN: u64 = 1024 * 1024;
 
 #[derive(Parser)]
@@ -88,6 +89,7 @@ enum OpencodeAction {
     Tools,
 }
 
+/// @brief Reads the standard input, up to 1 MiB.
 fn read_stdin() -> Result<String, String> {
     let mut text = String::new();
     std::io::stdin()
@@ -97,11 +99,15 @@ fn read_stdin() -> Result<String, String> {
     Ok(text)
 }
 
+/// @brief Gives the environment variables of the process.
 fn env() -> EnvMap {
     std::env::vars().collect()
 }
 
-/// Hooks fail open: a broken InBand must never block a session.
+/// @brief Runs one hook with the hook JSON on stdin.
+///
+/// @details A hook never fails: a broken InBand must never stop a session.
+/// Without output, a Claude Code hook prints nothing, and a Codex hook prints `{}`.
 async fn hook(client: HookClient) -> Result<(), String> {
     let payload: Value = serde_json::from_str(&read_stdin()?)
         .map_err(|error| format!("the hook input is not JSON: {error}"))?;
@@ -129,6 +135,9 @@ async fn hook(client: HookClient) -> Result<(), String> {
     Ok(())
 }
 
+/// @brief Runs one `inband opencode` action for the plugin.
+///
+/// @return Exit code 1 when a team command fails, so the plugin can show the error.
 async fn opencode(session: Option<&str>, action: OpencodeAction) -> Result<ExitCode, String> {
     if let OpencodeAction::Tools = action {
         let tools =
@@ -163,6 +172,7 @@ async fn opencode(session: Option<&str>, action: OpencodeAction) -> Result<ExitC
     })
 }
 
+/// @brief Runs the installer, then prints what it did and what the user must still do.
 async fn install(client: bool, no_service: bool) -> Result<(), String> {
     let env = env();
     let home = env
@@ -200,7 +210,7 @@ async fn install(client: bool, no_service: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Asks the new daemon for its health, for a few seconds.
+/// @brief Asks the new daemon for its health: 10 tries, 0.5 s apart.
 async fn health(binary: &std::path::Path) -> String {
     let daemon = match Client::from_env("admin", env()) {
         Ok(daemon) => daemon,
@@ -228,6 +238,7 @@ async fn health(binary: &std::path::Path) -> String {
     )
 }
 
+/// @brief Reads the command line and runs the command.
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()

@@ -1,50 +1,65 @@
-//! Neutralizes message content before it is stored and shown to agents or to the user.
+//! @file sanitize.rs
+//! @brief Cleans the content of each message before the daemon stores it.
 //!
-//! Content comes from agents that may follow injected instructions. The daemon removes what can
-//! hide text from the human (terminal escapes, bidi and zero-width characters) and what can forge
-//! the channel markup that carries the trusted sender metadata.
+//! @details Mail comes from agents. An agent can follow instructions that an attacker put in its input.
+//! The daemon thus removes two types of dangerous text:
+//! - text that hides content from the human: terminal escapes, bidi chars and zero-width chars;
+//! - text that imitates the `<channel>` tag. This tag carries the sender data that InBand guarantees.
 
-/// The cleaned content and what was changed.
+/// @brief The cleaned content, and what the cleaning changed.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Sanitized {
+    /// The content after the cleaning.
     pub content: String,
+    /// The number of removed terminal escapes and control chars.
     pub removed_escapes: usize,
+    /// The number of removed invisible chars.
     pub removed_invisible: usize,
+    /// The number of escaped channel tags.
     pub escaped_tags: usize,
 }
 
 impl Sanitized {
+    /// @brief Tells if the cleaning changed the content.
     #[must_use]
     pub fn changed(&self) -> bool {
         self.removed_escapes + self.removed_invisible + self.escaped_tags > 0
     }
 }
 
-/// Chars that render as nothing, or that change the direction of the text around them.
+/// @brief Tells if a char shows nothing, or changes the direction of the text near it.
+///
+/// @details The list contains:
+/// - the bidi embeddings, overrides, isolates and directional marks;
+/// - the zero-width chars, the word joiner, the invisible operators and the byte order mark;
+/// - the soft hyphen, the combining grapheme joiner, and the Mongolian, Khmer and Hangul fillers;
+/// - the variation selectors, the interlinear annotation chars, and the tag chars.
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
-        // Bidi embeddings, overrides and isolates, and the directional marks.
         '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
-        // Zero-width chars, word joiner, invisible operators and the byte order mark.
         | '\u{200B}'..='\u{200D}' | '\u{2060}'..='\u{2065}' | '\u{206A}'..='\u{206F}' | '\u{FEFF}'
-        // Soft hyphen, combining grapheme joiner, Mongolian and Khmer fillers, Hangul fillers.
         | '\u{00AD}' | '\u{034F}' | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}'
         | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}'
-        // Variation selectors, interlinear annotation, tag chars and their supplement.
         | '\u{FE00}'..='\u{FE0F}' | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
-/// Skips one escape sequence that starts at `ESC` and returns the number of chars consumed after it.
+/// @brief Finds the end of one terminal escape sequence.
+///
+/// @details The supported sequences are:
+/// - CSI: `ESC [`, the parameters, then a final byte from 0x40 to 0x7E;
+/// - OSC, DCS, SOS, PM and APC: up to BEL or `ESC \`;
+/// - the other escapes: `ESC` and one more char.
+///
+/// @param chars The chars after `ESC`.
+/// @return The number of chars of the sequence after `ESC`.
 fn skip_escape(chars: &[char]) -> usize {
     match chars.first() {
-        // CSI: ESC [ parameters, then a final byte in 0x40..=0x7E.
         Some('[') => chars[1..]
             .iter()
             .position(|c| ('\u{40}'..='\u{7E}').contains(c))
             .map_or(chars.len(), |end| end + 2),
-        // OSC, DCS, SOS, PM, APC: until BEL or ESC \.
         Some(']' | 'P' | 'X' | '^' | '_') => {
             let mut index = 1;
             while index < chars.len() {
@@ -63,7 +78,11 @@ fn skip_escape(chars: &[char]) -> usize {
     }
 }
 
-/// True when `chars` starts with `<channel` or `</channel`, in any case, after optional spaces.
+/// @brief Tells if the text starts with `<channel` or `</channel`.
+///
+/// @details The check ignores the case, and the spaces after `<` and `/`.
+///
+/// @param chars The text from a `<` char.
 fn starts_channel_tag(chars: &[char]) -> bool {
     let skip_spaces = |mut index: usize| {
         while chars.get(index).is_some_and(|c| c.is_whitespace()) {
@@ -79,11 +98,17 @@ fn starts_channel_tag(chars: &[char]) -> bool {
     word.eq_ignore_ascii_case("channel")
 }
 
-/// Removes terminal escapes, control chars other than newline and tab, and invisible chars. Then
-/// escapes `<` when it opens a channel tag.
+/// @brief Cleans the content of a message.
 ///
-/// The removal runs first: a tag split by removed chars, such as `<` ESC `[0m` `channel`, must be
-/// seen whole by the tag check.
+/// @details The function does two steps, in this order:
+/// 1. It removes the terminal escapes, the control chars (but not newline and tab) and the invisible chars.
+/// 2. It replaces the `<` of each channel tag with `&lt;`.
+///
+/// The order is important. A removed char can split a tag, for example `<` ESC `[0m` `channel`.
+/// The tag check must see the tag after the removal.
+///
+/// @param content The content from the agent.
+/// @return The cleaned content, and the number of removed and escaped chars.
 #[must_use]
 pub fn sanitize(content: &str) -> Sanitized {
     let chars: Vec<char> = content.chars().collect();
@@ -125,7 +150,12 @@ pub fn sanitize(content: &str) -> Sanitized {
     result
 }
 
-/// True when the content contains one of the configured tokens.
+/// @brief Tells if the content contains one of the tokens.
+///
+/// @details The daemon refuses a message that contains a token. This stops an agent that sends a token to another agent.
+///
+/// @param content The content of the message.
+/// @param tokens The tokens of the configuration.
 #[must_use]
 pub fn contains_token<'a>(content: &str, tokens: impl IntoIterator<Item = &'a str>) -> bool {
     tokens

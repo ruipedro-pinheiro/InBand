@@ -1,13 +1,24 @@
-//! Registry of Codex sessions: canonical `codex-<uuid>` mailboxes and readable labels.
+//! @file codex_session.rs
+//! @brief The registry of Codex sessions.
+//!
+//! @details The mailbox of a Codex session is `codex-<session uuid>`.
+//! The name thus tells which session owns the mailbox.
+//! Each session also has a short label for humans, for example `codex-myrepo-019f6767`.
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::db::iso_now;
 
+/// @brief The prefix of all Codex mailboxes. As a recipient, it means "the latest Codex session".
 pub const CODEX_FAMILY: &str = "codex";
+/// @brief The maximum length of a mailbox name and of a label.
 const MAX_AGENT_NAME_LENGTH: usize = 64;
+/// @brief The lengths of the uuid part of a label.
+///
+/// @details The registry tries the short length first. When another session has that label, it tries the next length.
 const LABEL_SUFFIX_LENGTHS: [usize; 3] = [8, 12, 32];
 
+/// @brief The errors of the registry.
 #[derive(Debug, thiserror::Error)]
 pub enum CodexSessionError {
     #[error("invalid Codex session UUID \"{0}\": expected canonical 8-4-4-4-12 hexadecimal form")]
@@ -18,18 +29,25 @@ pub enum CodexSessionError {
     Db(#[from] rusqlite::Error),
 }
 
+/// @brief One Codex session in the registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexSession {
+    /// `codex-<uuid>`.
     pub mailbox: String,
+    /// The uuid in lower case.
     pub session_id: String,
+    /// The short name for humans, for example `codex-myrepo-019f6767`.
     pub display_label: String,
+    /// The working directory of the session.
     pub cwd: String,
+    /// `active` during a turn, `idle` after it.
     pub lifecycle: String,
     pub registered_at: String,
     pub last_seen: String,
 }
 
 impl CodexSession {
+    /// @brief Reads a session from a row of the `codex_sessions` table.
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             mailbox: row.get("mailbox")?,
@@ -43,6 +61,7 @@ impl CodexSession {
     }
 }
 
+/// @brief Tells if an id has the form 8-4-4-4-12 of hex digits.
 fn is_canonical_uuid(id: &str) -> bool {
     let groups: Vec<&str> = id.split('-').collect();
     groups.len() == 5
@@ -52,10 +71,11 @@ fn is_canonical_uuid(id: &str) -> bool {
             .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// The session id in lowercase canonical form.
+/// @brief Gives the session id in lower case.
 ///
-/// # Errors
-/// Returns an error when the id is not an 8-4-4-4-12 hexadecimal UUID.
+/// @param session_id The id from Codex.
+/// @return The id in lower case.
+/// @throws CodexSessionError::InvalidUuid The id is not a uuid of the form 8-4-4-4-12.
 pub fn normalize_session_id(session_id: &str) -> Result<String, CodexSessionError> {
     let normalized = session_id.to_ascii_lowercase();
     if is_canonical_uuid(&normalized) {
@@ -65,10 +85,9 @@ pub fn normalize_session_id(session_id: &str) -> Result<String, CodexSessionErro
     }
 }
 
-/// `codex-<uuid>`.
+/// @brief Gives the mailbox of a session: `codex-<uuid>`.
 ///
-/// # Errors
-/// Returns an error for an invalid session id.
+/// @throws CodexSessionError::InvalidUuid The id is not a valid uuid.
 pub fn canonical_mailbox(session_id: &str) -> Result<String, CodexSessionError> {
     Ok(format!(
         "{CODEX_FAMILY}-{}",
@@ -76,12 +95,15 @@ pub fn canonical_mailbox(session_id: &str) -> Result<String, CodexSessionError> 
     ))
 }
 
-/// True for a `codex-<uuid>` mailbox.
+/// @brief Tells if a name is a `codex-<uuid>` mailbox.
 #[must_use]
 pub fn is_canonical_mailbox(name: &str) -> bool {
     name.strip_prefix("codex-").is_some_and(is_canonical_uuid)
 }
 
+/// @brief Makes a short name from a directory path.
+///
+/// @details The result has only lower case letters, digits and `-`. It is `root` when no letter or digit stays.
 fn slugify_cwd(cwd: &str) -> String {
     let mut slug = String::new();
     for c in cwd.to_ascii_lowercase().chars() {
@@ -99,10 +121,13 @@ fn slugify_cwd(cwd: &str) -> String {
     }
 }
 
-/// `codex-<cwd slug>-<uuid prefix>`, at most 64 chars.
+/// @brief Makes the label of a session: `codex-<directory>-<start of the uuid>`.
 ///
-/// # Errors
-/// Returns an error for an invalid session id.
+/// @param cwd The working directory of the session.
+/// @param session_id The session id.
+/// @param suffix_length The number of uuid chars in the label.
+/// @return The label, 64 chars at most.
+/// @throws CodexSessionError::InvalidUuid The id is not a valid uuid.
 pub fn display_label(
     cwd: &str,
     session_id: &str,
@@ -120,10 +145,16 @@ pub fn display_label(
     Ok(format!("{CODEX_FAMILY}-{slug}-{suffix}"))
 }
 
-/// Registers a session, or updates its cwd, lifecycle and last-seen time.
+/// @brief Adds a session to the registry, or updates it.
 ///
-/// # Errors
-/// Returns an error for an invalid session id, a label collision on every suffix length, or SQLite.
+/// @details A known session keeps its label. The function updates its directory, its state and its last-seen time.
+///
+/// @param db The database.
+/// @param session_id The session id.
+/// @param cwd The working directory of the session.
+/// @param lifecycle The state of the session, for example `active` or `idle`.
+/// @return The session, as the registry keeps it.
+/// @throws CodexSessionError The id is not valid, all the labels are in use, or the database fails.
 pub fn register(
     db: &mut Connection,
     session_id: &str,
@@ -166,6 +197,9 @@ pub fn register(
     Ok(session)
 }
 
+/// @brief Finds a label that no other session has.
+///
+/// @throws CodexSessionError::NoLabel Other sessions have all the possible labels.
 fn available_label(
     db: &Connection,
     cwd: &str,
@@ -185,8 +219,10 @@ fn available_label(
     Err(CodexSessionError::NoLabel(session_id.to_owned()))
 }
 
-/// # Errors
-/// Returns SQLite errors.
+/// @brief Finds a session from its mailbox.
+///
+/// @return The session, or `None` when the registry does not have it.
+/// @throws CodexSessionError::Db The database fails.
 pub fn by_mailbox(
     db: &Connection,
     mailbox: &str,
@@ -200,8 +236,10 @@ pub fn by_mailbox(
         .optional()?)
 }
 
-/// # Errors
-/// Returns an error for an invalid session id or SQLite.
+/// @brief Finds a session from its id.
+///
+/// @return The session, or `None` when the registry does not have it.
+/// @throws CodexSessionError The id is not valid, or the database fails.
 pub fn by_session_id(
     db: &Connection,
     session_id: &str,
@@ -216,10 +254,11 @@ pub fn by_session_id(
         .optional()?)
 }
 
-/// The session seen last, the target of the `codex` alias.
+/// @brief Finds the session that the registry saw last.
 ///
-/// # Errors
-/// Returns SQLite errors.
+/// @details This session receives the mail sent to the `codex` alias.
+///
+/// @throws CodexSessionError::Db The database fails.
 pub fn most_recent(db: &Connection) -> Result<Option<CodexSession>, CodexSessionError> {
     Ok(db
         .query_row(
@@ -231,10 +270,9 @@ pub fn most_recent(db: &Connection) -> Result<Option<CodexSession>, CodexSession
         .optional()?)
 }
 
-/// Updates the last-seen time, and the lifecycle when given.
+/// @brief Updates the last-seen time of a session, and its state when given.
 ///
-/// # Errors
-/// Returns SQLite errors.
+/// @throws CodexSessionError::Db The database fails.
 pub fn touch(
     db: &mut Connection,
     mailbox: &str,
@@ -261,10 +299,10 @@ pub fn touch(
     Ok(())
 }
 
-/// Every Codex session with its unread count, most recent first.
+/// @brief Gives all Codex sessions with their number of unread messages.
 ///
-/// # Errors
-/// Returns SQLite errors.
+/// @return The sessions, the most recent first.
+/// @throws CodexSessionError::Db The database fails.
 pub fn list_with_unread(db: &Connection) -> Result<Vec<(CodexSession, i64)>, CodexSessionError> {
     let mut statement = db.prepare(
         "SELECT cs.*, COUNT(d.message_id) AS unread FROM codex_sessions cs

@@ -1,3 +1,6 @@
+//! @file daemon_tests.rs
+//! @brief The tests of the daemon: its start, its refusals, and its stop.
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Instant;
@@ -9,6 +12,7 @@ use super::*;
 const ADMIN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CLAUDE: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
+/// @brief Gives a free port of this machine.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -17,6 +21,7 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// @brief Makes an install directory with this configuration and these tokens.
 fn install_dir(name: &str, config: &str, tokens: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("inband-daemon-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -28,6 +33,7 @@ fn install_dir(name: &str, config: &str, tokens: &str) -> PathBuf {
     dir
 }
 
+/// @brief Makes a configuration with the `admin` and `claude` clients.
 fn config_with_auth(port: u16) -> String {
     format!(
         r#"{{"port": {port}, "maxMessageBytes": 65536, "wake": {{}},
@@ -37,10 +43,12 @@ fn config_with_auth(port: u16) -> String {
     )
 }
 
+/// @brief Gives an environment without a real home directory.
 fn env() -> EnvMap {
     [("HOME".to_owned(), "/nonexistent".to_owned())].into()
 }
 
+/// @brief Gives the options of the daemon for a test.
 fn options(directory: &Path, grace: Duration) -> DaemonOptions {
     DaemonOptions {
         directory: Some(directory.to_owned()),
@@ -48,10 +56,13 @@ fn options(directory: &Path, grace: Duration) -> DaemonOptions {
     }
 }
 
+/// @brief The daemon serves its install directory, and stops in the given time.
+///
+/// @details The Claude token has the name of an install before the rename.
+/// A long poll that is open must not stop the daemon after the given time.
 #[tokio::test]
 async fn serves_the_install_directory_and_stops_within_the_grace() {
     let port = free_port();
-    // The Claude token uses the name of installs made before the rename.
     let dir = install_dir(
         "serve",
         &config_with_auth(port),
@@ -91,7 +102,6 @@ async fn serves_the_install_directory_and_stops_within_the_grace() {
     let anonymous = client.get(format!("{base}/health")).send().await.unwrap();
     assert_eq!(anonymous.status(), 401);
 
-    // An open long poll must not hold the shutdown past the grace.
     let poll = tokio::spawn(
         client
             .get(format!("{base}/subscribe?prefix=claude&timeout=60"))

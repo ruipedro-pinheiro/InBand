@@ -1,3 +1,6 @@
+//! @file bridge_tests.rs
+//! @brief The tests of the message bus: names, routing, waits, security, teams and wakes.
+
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,6 +15,7 @@ const SESSION_A: &str = "019f6767-789c-73b2-bc5c-ac8575f29efd";
 const SESSION_B: &str = "019f6768-789c-73b2-bc5c-ac8575f29efd";
 const SECRET: &str = "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss";
 
+/// @brief A wake dispatcher that gives prepared results and keeps each call.
 #[derive(Default)]
 struct FakeWake {
     calls: Mutex<Vec<WakeInput>>,
@@ -19,6 +23,7 @@ struct FakeWake {
 }
 
 impl FakeWake {
+    /// @brief Makes a fake dispatcher that gives these results, one for each call.
     fn script(results: &[WakeDisposition]) -> Arc<Self> {
         let fake = Self::default();
         *fake.results.lock().unwrap() = results
@@ -31,12 +36,14 @@ impl FakeWake {
         Arc::new(fake)
     }
 
+    /// @brief Gives the wakes that the fake dispatcher received.
     fn calls(&self) -> Vec<WakeInput> {
         self.calls.lock().unwrap().clone()
     }
 }
 
 impl WakeDispatch for FakeWake {
+    /// @brief Keeps the wake, and gives the next prepared result.
     fn dispatch(&self, _target: &WakeTarget, input: WakeInput) -> WakeFuture {
         self.calls.lock().unwrap().push(input);
         let result = self
@@ -49,6 +56,7 @@ impl WakeDispatch for FakeWake {
     }
 }
 
+/// @brief Makes a configuration with these wake targets.
 fn config(wake: BTreeMap<String, WakeTarget>) -> BridgeConfig {
     BridgeConfig {
         port: 0,
@@ -58,6 +66,7 @@ fn config(wake: BTreeMap<String, WakeTarget>) -> BridgeConfig {
     }
 }
 
+/// @brief Makes a Codex wake target with these retry delays.
 fn codex_wake(delays: &[u32]) -> BTreeMap<String, WakeTarget> {
     let mut wake = BTreeMap::new();
     wake.insert(
@@ -75,6 +84,7 @@ fn codex_wake(delays: &[u32]) -> BTreeMap<String, WakeTarget> {
     wake
 }
 
+/// @brief Makes a bus with these wake targets and this fake dispatcher.
 fn bridge_with(wake: BTreeMap<String, WakeTarget>, fake: Arc<FakeWake>) -> Arc<Bridge> {
     Bridge::new(
         open_in_memory().unwrap(),
@@ -84,12 +94,14 @@ fn bridge_with(wake: BTreeMap<String, WakeTarget>, fake: Arc<FakeWake>) -> Arc<B
     )
 }
 
+/// @brief Makes a bus without wakes.
 fn bus() -> Arc<Bridge> {
     bridge_with(BTreeMap::new(), Arc::new(FakeWake::default()))
 }
 
-/// Binds each member to its session (see [`me`]), then puts `workers` and `lead` in `name`.
-/// In this order, no join notice reaches the lead.
+/// @brief Binds each member to its session (see [`me`]), then puts the workers and the lead in the team.
+///
+/// @details The workers join first, so no join notice reaches the lead.
 fn team(bridge: &Arc<Bridge>, name: &str, lead: &str, workers: &[&str]) {
     for member in workers.iter().chain([&lead]) {
         bridge.bind_session(&me(member), member).unwrap();
@@ -100,6 +112,7 @@ fn team(bridge: &Arc<Bridge>, name: &str, lead: &str, workers: &[&str]) {
     bridge.set_lead(&me(lead), lead, name).unwrap();
 }
 
+/// @brief Gives a caller with the token of a client and no session.
 fn client(id: &str) -> Caller {
     Caller {
         auth: AuthInfo {
@@ -113,6 +126,7 @@ fn client(id: &str) -> Caller {
     }
 }
 
+/// @brief Gives a caller with the token of a client, signed for a session.
 fn session(id: &str, key: &str) -> Caller {
     Caller {
         session: Some(key.to_owned()),
@@ -120,16 +134,17 @@ fn session(id: &str, key: &str) -> Caller {
     }
 }
 
-/// A request signed by the session that `team` binds to `mailbox`.
 const OPENCODE_A: &str = "ses_f0311d340ffenkofYtqi2xYpYM";
 const OPENCODE_B: &str = "ses_f0311cbe0ffeG0O324fYguvGxb";
 
+/// @brief Gives the mailbox of an `OpenCode` session.
 fn opencode(session_id: &str) -> String {
     crate::opencode_session::mailbox(session_id).unwrap()
 }
 
-/// A request signed by the session that owns `mailbox`. Codex mailboxes are `codex-<session id>`,
-/// and OpenCode mailboxes are digests of the test sessions above.
+/// @brief Gives a caller signed for the session that owns a mailbox.
+///
+/// @details A Codex mailbox is `codex-<session id>`. An `OpenCode` mailbox is the digest of the test session ids.
 fn me(mailbox: &str) -> Caller {
     if let Some(uuid) = mailbox.strip_prefix("codex-") {
         return session("codex", uuid);
@@ -143,6 +158,7 @@ fn me(mailbox: &str) -> Caller {
     session(family, &format!("s-{mailbox}"))
 }
 
+/// @brief Gives a caller with the admin token.
 fn admin() -> Caller {
     Caller {
         auth: AuthInfo::disabled(),
@@ -150,11 +166,10 @@ fn admin() -> Caller {
     }
 }
 
+/// @brief Gives the mailbox of a Codex session.
 fn codex_mailbox(session: &str) -> String {
     format!("codex-{session}")
 }
-
-// ---- names and Codex routing ----
 
 #[test]
 fn accepts_64_char_names_and_rejects_65() {
@@ -379,8 +394,6 @@ fn clear_needs_confirmation() {
     assert_eq!(bridge.clear(&admin(), "wipe").unwrap(), 1);
 }
 
-// ---- waits and channel subscriptions ----
-
 #[tokio::test]
 async fn wait_returns_a_preview_when_mail_arrives() {
     let bridge = bus();
@@ -473,6 +486,9 @@ async fn channel_subscriptions_get_pushed_mail_for_their_exact_mailbox() {
     assert_eq!(rows[0].sender_role.as_deref(), Some("lead"));
 }
 
+/// @brief A long poll with a cursor gives the unread mail after the cursor.
+///
+/// @details Without a cursor, an old shim waits only for new mail.
 #[tokio::test]
 async fn the_cursor_replays_only_later_unread_mail() {
     let bridge = bus();
@@ -501,7 +517,6 @@ async fn the_cursor_replays_only_later_unread_mail() {
         rows.iter().map(|r| r.content.as_str()).collect::<Vec<_>>(),
         ["queued"]
     );
-    // Without a cursor, old shims only wait for live mail.
     assert!(
         bridge
             .subscribe_mailbox(&admin(), "claude-b-0002", 1, None)
@@ -539,8 +554,6 @@ async fn caps_pending_subscriptions_per_target() {
         "dropped subscriptions must free their slot"
     );
 }
-
-// ---- security ----
 
 #[test]
 fn a_bound_mailbox_only_sends_from_its_own_session() {
@@ -580,18 +593,20 @@ fn a_bound_mailbox_only_sends_from_its_own_session() {
     );
 }
 
+/// @brief An unbound mailbox needs a signed session, unless its token names only this mailbox.
+///
+/// @details `claude-*` covers all the Claude sessions, so the token alone does not tell which session calls.
+/// The token of the v1 `OpenCode` client can only be `opencode`.
 #[test]
 fn an_unbound_mailbox_needs_a_signed_session_unless_its_token_names_it_exactly() {
     let bridge = bus();
     bridge.join(&admin(), "claude-w-0002", "x").unwrap();
     bridge.join(&admin(), "opencode", "x").unwrap();
     bridge.set_lead(&admin(), "claude-lead-0001", "x").unwrap();
-    // `claude-*` covers every Claude session, so the token alone does not say which one calls.
     assert!(matches!(
         bridge.send(&client("claude"), "claude-w-0002", "claude-lead-0001", "hi"),
         Err(BridgeError::SessionRequired(_))
     ));
-    // The OpenCode token can only ever be `opencode`.
     let opencode = Caller {
         auth: AuthInfo {
             agents: vec!["opencode".to_owned()],
@@ -614,8 +629,6 @@ fn a_token_cannot_act_outside_its_patterns() {
         Err(BridgeError::NotAuthorized { .. })
     ));
 }
-
-// ---- teams ----
 
 #[test]
 fn only_the_bound_session_can_take_the_lead() {
@@ -920,6 +933,7 @@ fn content_is_sanitized_before_storage() {
     assert!(!stored.contains('\u{1b}') && !stored.contains('\u{202E}'));
 }
 
+/// @brief Gives the outcome and the reason of each line of the audit log.
 fn audit_rows(bridge: &Bridge) -> Vec<(String, Option<String>)> {
     let db = lock(&bridge.db);
     let mut statement = db
@@ -1029,8 +1043,6 @@ fn a_full_inbox_refuses_new_mail() {
         Err(BridgeError::RecipientFull(_))
     ));
 }
-
-// ---- wakes ----
 
 #[tokio::test(start_paused = true)]
 async fn codex_wakes_retry_with_the_configured_delays() {
@@ -1206,6 +1218,9 @@ async fn startup_reconciliation_wakes_only_sessions_with_unread_mail() {
     );
 }
 
+/// @brief The wake of an `OpenCode` mailbox goes to its own session.
+///
+/// @details A member that no session bound has no session to wake.
 #[tokio::test]
 async fn an_opencode_session_mailbox_wakes_its_own_session() {
     let fake = FakeWake::script(&[WakeDisposition::Started]);
@@ -1234,7 +1249,6 @@ async fn an_opencode_session_mailbox_wakes_its_own_session() {
     assert_eq!(calls[0].session_id.as_deref(), Some(OPENCODE_A));
     assert_eq!(calls[0].mailbox.as_deref(), Some(a.as_str()));
 
-    // A member that no session bound has no session to wake.
     bridge.join(&admin(), &b, "x").unwrap();
     let unbound = bridge
         .send(&me("claude-a-0001"), "claude-a-0001", &b, "task")

@@ -1,3 +1,6 @@
+//! @file shim_tests.rs
+//! @brief The tests of the shim, on an in-memory stdio pair, against a real daemon on a loopback port.
+
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
@@ -12,14 +15,17 @@ use crate::test_support::*;
 const LEAD_SESSION: &str = "1a2b3c4d-0000-4000-8000-000000000001";
 const WORKER_SESSION: &str = "5e6f7a8b-0000-4000-8000-000000000002";
 
+/// @brief A session source that the test controls.
 struct Stub(Mutex<Option<Identity>>);
 
 impl IdentitySource for Stub {
+    /// @brief Gives the session that the test set.
     fn current(&self) -> Option<Identity> {
         self.0.lock().unwrap().clone()
     }
 }
 
+/// @brief Gives the identity of a Claude Code session in `/work/repo`.
 fn identity(session: &str) -> Identity {
     Identity {
         session: session.to_owned(),
@@ -27,18 +33,20 @@ fn identity(session: &str) -> Identity {
     }
 }
 
-/// The client end of one shim on an in-memory stdio pair.
+/// @brief The client side of one shim.
 struct Peer {
     writer: DuplexStream,
     lines: Lines<BufReader<DuplexStream>>,
 }
 
 impl Peer {
+    /// @brief Sends one JSON message to the shim.
     async fn send(&mut self, message: &Value) {
         let line = format!("{message}\n");
         self.writer.write_all(line.as_bytes()).await.unwrap();
     }
 
+    /// @brief Reads the next JSON message of the shim, in 10 s at most.
     async fn next(&mut self) -> Value {
         let line = tokio::time::timeout(Duration::from_secs(10), self.lines.next_line())
             .await
@@ -48,7 +56,7 @@ impl Peer {
         serde_json::from_str(&line).unwrap()
     }
 
-    /// The response to request `id`, skipping notifications.
+    /// @brief Reads the answer to request `id`, after the notifications.
     async fn reply(&mut self, id: u64) -> Value {
         loop {
             let message = self.next().await;
@@ -58,6 +66,7 @@ impl Peer {
         }
     }
 
+    /// @brief Calls one tool through the shim.
     async fn call(&mut self, id: u64, name: &str, arguments: &Value) -> Value {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
                           "params": {"name": name, "arguments": arguments}}))
@@ -66,11 +75,18 @@ impl Peer {
     }
 }
 
+/// @brief Starts a Claude Code shim with this session source.
 async fn start_shim(base: &str, identity: Arc<Stub>) -> (Peer, Value) {
     let shim = Shim::new(Arc::new(daemon_client(base, CLAUDE_CLIENT)), identity);
     start(shim).await
 }
 
+/// @brief Starts a shim, and does the MCP start like Claude Code.
+///
+/// @details Claude Code starts with the 2026-07-28 discovery, then uses `initialize`.
+/// The shim must refuse the discovery, else rmcp refuses the next `tools/list`.
+///
+/// @return The client side, and the answer to `initialize`.
 async fn start(shim: Shim) -> (Peer, Value) {
     let (client_out, shim_in) = tokio::io::duplex(1 << 16);
     let (shim_out, client_in) = tokio::io::duplex(1 << 16);
@@ -79,7 +95,6 @@ async fn start(shim: Shim) -> (Peer, Value) {
         writer: client_out,
         lines: BufReader::new(client_in).lines(),
     };
-    // Claude Code opens with the 2026-07-28 discovery, then falls back to initialize.
     peer.send(
         &json!({"jsonrpc": "2.0", "id": 99, "method": "server/discover", "params": {"_meta": {
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -101,6 +116,7 @@ async fn start(shim: Shim) -> (Peer, Value) {
     (peer, init)
 }
 
+/// @brief Makes team `x` with a Claude lead and a Claude worker.
 async fn team(base: &str) {
     let daemon = daemon_client(base, CLAUDE_CLIENT);
     let state = MailcheckState::always();
@@ -129,6 +145,7 @@ async fn team(base: &str) {
     .unwrap();
 }
 
+/// @brief Gives the error flag and the JSON of a tool result.
 fn tool_json(reply: &Value) -> (bool, Value) {
     let result = &reply["result"];
     let text = result["content"][0]["text"].as_str().unwrap_or("null");
@@ -138,6 +155,10 @@ fn tool_json(reply: &Value) -> (bool, Value) {
     )
 }
 
+/// @brief The shim acts for its own session, and sends new mail as channel events.
+///
+/// @details The model writes `from`, but the shim signs the session. The lead thus cannot write as the worker.
+/// The shim of the worker receives the new mail as a channel event, with the role that the daemon set.
 #[tokio::test]
 async fn the_shim_speaks_for_its_session_and_pushes_new_mail() {
     let (base, _) = serve().await;
@@ -170,7 +191,6 @@ async fn the_shim_speaks_for_its_session_and_pushes_new_mail() {
         "{names:?}"
     );
 
-    // The model writes `from`, but the shim signs the session: the lead cannot write as the worker.
     let spoof = lead_shim
         .call(
             2,
@@ -194,7 +214,6 @@ async fn the_shim_speaks_for_its_session_and_pushes_new_mail() {
         .await;
     assert!(!tool_json(&sent).0, "{sent}");
 
-    // The worker shim pushes the new mail as a channel event, with the role set by the daemon.
     let event = loop {
         let message = worker_shim.next().await;
         if message["method"] == "notifications/claude/channel"
@@ -224,6 +243,7 @@ async fn the_shim_refuses_tools_until_it_knows_its_session() {
     assert!(reply.get("error").is_some(), "{reply}");
 }
 
+/// @brief Makes an empty Claude configuration directory.
 fn registry_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("inband-registry-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -231,12 +251,14 @@ fn registry_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// @brief Writes the registry file of a Claude Code process.
 fn write_row(dir: &Path, pid: u32, session: &str, started_at: u64, proc_start: &str) {
     let row = json!({"pid": pid, "sessionId": session, "cwd": "/work/repo",
                      "startedAt": started_at, "procStart": proc_start});
     std::fs::write(dir.join(format!("sessions/{pid}.json")), row.to_string()).unwrap();
 }
 
+/// @brief Makes the registry of a process, as the shim of that process would.
 fn registry(dir: &Path, pid: u32, session: &str) -> ClaudeRegistry {
     let env: EnvMap = [
         ("CLAUDE_CODE_SESSION_ID".to_owned(), session.to_owned()),
@@ -248,6 +270,10 @@ fn registry(dir: &Path, pid: u32, session: &str) -> ClaudeRegistry {
     ClaudeRegistry::from_env(&env, pid).unwrap()
 }
 
+/// @brief The registry follows `/clear`, but not another process.
+///
+/// @details After `/clear`, the same process has a new session.
+/// When the process ends, another process can get the same pid. The shim must then stop.
 #[test]
 fn the_registry_follows_clear_but_not_another_process() {
     let dir = registry_dir("clear");
@@ -259,10 +285,8 @@ fn the_registry_follows_clear_but_not_another_process() {
     );
     write_row(&dir, 4242, LEAD_SESSION, 100, "77");
     assert_eq!(registry.current(), Some(identity(LEAD_SESSION)));
-    // /clear: same process, new session.
     write_row(&dir, 4242, WORKER_SESSION, 100, "77");
     assert_eq!(registry.current(), Some(identity(WORKER_SESSION)));
-    // The process ended and another one reused the pid.
     write_row(&dir, 4242, WORKER_SESSION, 999, "88");
     assert_eq!(registry.current(), None);
     std::fs::write(dir.join("sessions/4242.json"), "{\"pid\": 42").unwrap();
@@ -293,6 +317,7 @@ fn the_registry_ignores_a_stale_file_and_a_wrong_pid() {
     assert!(ClaudeRegistry::from_env(&env, 1).is_err());
 }
 
+/// @brief Calls `send_message` through the Codex shim, with the session in `_meta` when given.
 async fn codex_call(shim: &mut Peer, id: u64, session: Option<&str>, arguments: &Value) -> Value {
     let mut params = json!({"name": "send_message", "arguments": arguments});
     if let Some(session) = session {
@@ -303,6 +328,9 @@ async fn codex_call(shim: &mut Peer, id: u64, session: Option<&str>, arguments: 
     shim.reply(id).await
 }
 
+/// @brief The Codex shim signs the session that Codex gives in each call.
+///
+/// @details One Codex process also serves the worker session. The worker session cannot write as the lead.
 #[tokio::test]
 async fn the_codex_shim_signs_the_session_that_codex_names() {
     let (base, _) = serve().await;
@@ -344,7 +372,6 @@ async fn the_codex_shim_signs_the_session_that_codex_names() {
     .await;
     assert!(!tool_json(&sent).0, "{sent}");
 
-    // The same process serves the worker session too, which cannot write as the lead.
     let spoof = codex_call(
         &mut shim,
         2,

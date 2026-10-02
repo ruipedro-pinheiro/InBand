@@ -1,3 +1,6 @@
+//! @file hooks_tests.rs
+//! @brief The tests of the hooks and of the team commands, against a real daemon on a loopback port.
+
 use std::os::unix::fs::PermissionsExt;
 
 use serde_json::{Value, json};
@@ -8,6 +11,7 @@ use crate::test_support::*;
 const LEAD_SESSION: &str = "1a2b3c4d-0000-4000-8000-000000000001";
 const WORKER_SESSION: &str = "5e6f7a8b-0000-4000-8000-000000000002";
 
+/// @brief Makes the JSON of a Claude Code hook.
 fn claude(event: &str, session: &str, extra: &Value) -> Value {
     let mut payload =
         json!({ "hook_event_name": event, "session_id": session, "cwd": "/work/My Repo" });
@@ -17,6 +21,7 @@ fn claude(event: &str, session: &str, extra: &Value) -> Value {
     payload
 }
 
+/// @brief Gives the context text of a hook output.
 fn context_of(output: &Value) -> &str {
     output["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -63,6 +68,9 @@ fn names_claude_mailboxes_like_v1() {
     );
 }
 
+/// @brief The Claude Code hooks bind the session and run the team commands.
+///
+/// @details A team command before `SessionStart` is refused: the mailbox is not bound to the session yet.
 #[tokio::test]
 async fn claude_hooks_bind_the_session_and_run_team_commands() {
     let (base, bridge) = serve().await;
@@ -71,7 +79,6 @@ async fn claude_hooks_bind_the_session_and_run_team_commands() {
     let lead = claude_mailbox("/work/My Repo", LEAD_SESSION);
     let worker = claude_mailbox("/work/My Repo", WORKER_SESSION);
 
-    // A team command before SessionStart: the mailbox is not bound to this session yet.
     let early = claude_hook(
         &daemon,
         &claude(
@@ -169,6 +176,7 @@ async fn claude_hooks_bind_the_session_and_run_team_commands() {
     assert_eq!(usage["decision"], "block");
 }
 
+/// @brief Checks that `PostToolUse` tells a session about its unread mail, and only then.
 async fn check_mail_reminders(
     daemon: &crate::client::Client,
     bridge: &std::sync::Arc<crate::bridge::Bridge>,

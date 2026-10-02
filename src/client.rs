@@ -1,7 +1,9 @@
-//! The client side of the daemon API, for the hooks, the Claude shim and the `OpenCode` plugin.
+//! @file client.rs
+//! @brief The client of the daemon API, for the hooks, the shims and the `OpenCode` plugin.
 //!
-//! Every request is signed with the token of one client. A request made for one session also signs
-//! that session, so the daemon knows which session acts, whatever the tool arguments say.
+//! @details Each request is signed with the token of one client.
+//! A request for one session also signs that session.
+//! The daemon thus knows which session acts, whatever the tool arguments say.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,8 +14,10 @@ use crate::auth::sign_request;
 use crate::config::{EnvMap, normalize_loopback_http_base_url};
 use crate::tokens::{client_token, load_token_env_file};
 
+/// @brief The daemon URL when no configuration gives another port.
 const DEFAULT_URL: &str = "http://127.0.0.1:7447";
 
+/// @brief The errors of a request to the daemon.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("invalid INBAND_URL: {0}")]
@@ -28,7 +32,7 @@ pub enum ClientError {
     Invalid(String),
 }
 
-/// A signed connection to the daemon, for one client of the token file.
+/// @brief A connection to the daemon, for one client of the token file.
 pub struct Client {
     base: String,
     id: String,
@@ -36,8 +40,10 @@ pub struct Client {
     http: reqwest::Client,
 }
 
-/// The daemon of this machine: the port of the installed `config.json`, else 7447. A machine
-/// that only runs agents has no `config.json` and reaches the daemon through a forwarded 7447.
+/// @brief Gives the URL of the daemon of this machine.
+///
+/// @details The port comes from the installed `config.json`, else it is 7447.
+/// A machine that only runs agents has no `config.json`. It reaches the daemon through a forwarded port 7447.
 fn local_daemon_url(env: &EnvMap) -> String {
     crate::daemon::default_directory(env)
         .and_then(|dir| std::fs::read_to_string(dir.join("config.json")).ok())
@@ -50,6 +56,7 @@ fn local_daemon_url(env: &EnvMap) -> String {
         )
 }
 
+/// @brief Gives the current time in milliseconds.
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -59,12 +66,13 @@ fn now_ms() -> u64 {
 }
 
 impl Client {
-    /// The client `client_id`, with its token from the environment or the token file.
+    /// @brief Makes the client from the environment and the token file.
     ///
-    /// `INBAND_URL` picks the daemon (loopback only), and `INBAND_CLIENT_ID` overrides the client.
+    /// @details `INBAND_URL` selects the daemon, on this machine only. `INBAND_CLIENT_ID` replaces the client name.
     ///
-    /// # Errors
-    /// Returns an error for an invalid URL or an unreadable token file.
+    /// @param client_id The client name, for example `claude`.
+    /// @param env The environment variables.
+    /// @throws ClientError The URL is not valid, or the token file cannot be read.
     pub fn from_env(client_id: &str, mut env: EnvMap) -> Result<Self, ClientError> {
         load_token_env_file(&mut env).map_err(|error| ClientError::Tokens(error.to_string()))?;
         let raw = env
@@ -83,10 +91,14 @@ impl Client {
         Self::new(&base, &client_id, token)
     }
 
-    /// A client for the daemon at `base`.
+    /// @brief Makes a client for the daemon at `base`.
     ///
-    /// # Errors
-    /// Returns an error when the HTTP client cannot be built.
+    /// @details The HTTP client does not use a system proxy, and does not follow redirects.
+    ///
+    /// @param base The daemon URL.
+    /// @param client_id The client name.
+    /// @param token The token. `None` sends requests without a signature.
+    /// @throws ClientError The HTTP client cannot be made.
     pub fn new(base: &str, client_id: &str, token: Option<String>) -> Result<Self, ClientError> {
         let http = reqwest::Client::builder()
             .no_proxy()
@@ -100,6 +112,7 @@ impl Client {
         })
     }
 
+    /// @brief Makes a request, and adds the signature headers when the client has a token.
     fn build(
         &self,
         method: &Method,
@@ -127,10 +140,14 @@ impl Client {
         request
     }
 
-    /// Sends one request and returns its JSON answer.
+    /// @brief Sends one request and gives its JSON answer.
     ///
-    /// # Errors
-    /// Returns an error when the daemon is down, refuses the request or answers with invalid JSON.
+    /// @param method The HTTP method.
+    /// @param path The path and the query.
+    /// @param body The JSON body.
+    /// @param session The session that the request acts for.
+    /// @param timeout The maximum time of the request.
+    /// @throws ClientError The daemon does not answer, refuses the request, or gives an answer that is not JSON.
     pub async fn request(
         &self,
         method: Method,
@@ -155,11 +172,16 @@ impl Client {
         serde_json::from_str(&text).map_err(|error| ClientError::Invalid(error.to_string()))
     }
 
-    /// Calls one MCP tool of the daemon for `session`. `on_progress` gets each progress
-    /// notification of the call, so a long wait can keep its own client alive.
+    /// @brief Calls one MCP tool of the daemon for a session.
     ///
-    /// # Errors
-    /// Returns an error when the daemon is down, refuses the request or sends no result.
+    /// @details The request asks for progress notifications, so a long wait does not stop at 50 s.
+    ///
+    /// @param name The tool name.
+    /// @param arguments The tool arguments.
+    /// @param session The session that the call acts for.
+    /// @param on_progress Receives each progress notification. The shim sends them on to its own client.
+    /// @return The tool result.
+    /// @throws ClientError The daemon does not answer, refuses the request, or gives no result.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -176,15 +198,9 @@ impl Client {
         self.rpc(&body, session, &mut on_progress).await
     }
 
-    /// The tool list of the daemon.
+    /// @brief Sends one JSON-RPC request to `/mcp` and reads the answer.
     ///
-    /// # Errors
-    /// Returns an error when the daemon is down or refuses the request.
-    pub async fn list_tools(&self, session: Option<&str>) -> Result<Value, ClientError> {
-        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
-        self.rpc(&body, session, &mut |_| {}).await
-    }
-
+    /// @details The answer is one JSON body, or a stream of events (SSE) with the progress notifications before the result.
     async fn rpc(
         &self,
         body: &Value,
@@ -228,6 +244,10 @@ impl Client {
     }
 }
 
+/// @brief Reads one JSON-RPC message of the answer.
+///
+/// @return The result, or `None` for a notification.
+/// @throws ClientError The message is a JSON-RPC error.
 fn handle_rpc_message(
     message: &Value,
     on_progress: &mut (dyn FnMut(&Value) + Send),
@@ -248,7 +268,7 @@ fn handle_rpc_message(
     Ok(Some(message["result"].clone()))
 }
 
-/// The `error` text of a daemon answer, else the raw text.
+/// @brief Gives the `error` text of an answer of the daemon, else the start of the raw text.
 fn error_message(text: &str) -> String {
     serde_json::from_str::<Value>(text)
         .ok()
@@ -262,13 +282,16 @@ fn error_message(text: &str) -> String {
         .unwrap_or_else(|| text.chars().take(200).collect())
 }
 
-/// Splits an SSE stream into the JSON-RPC messages of its `data:` lines.
+/// @brief Cuts an SSE stream into the JSON-RPC messages of its `data:` lines.
 #[derive(Default)]
 struct SseLines {
     pending: Vec<u8>,
 }
 
 impl SseLines {
+    /// @brief Adds one part of the stream, and gives the complete messages.
+    ///
+    /// @details A line can come in two parts. The incomplete line waits for the next part.
     fn push(&mut self, chunk: &[u8]) -> Vec<Value> {
         self.pending.extend_from_slice(chunk);
         let mut messages = Vec::new();

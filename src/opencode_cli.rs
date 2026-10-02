@@ -1,6 +1,9 @@
-//! `inband opencode ...`: what the `OpenCode` plugin runs. `OpenCode` loads only JavaScript
-//! plugins, so the plugin stays a thin layer: it passes the `sessionID` that `OpenCode` gives it,
-//! and this side signs and sends every request.
+//! @file opencode_cli.rs
+//! @brief The `inband opencode` commands that the `OpenCode` plugin runs.
+//!
+//! @details `OpenCode` loads only JavaScript plugins. The plugin is thus a thin layer.
+//! It gives the `sessionID` from `OpenCode` to these commands.
+//! These commands sign and send each request.
 
 use reqwest::Method;
 use serde_json::Value;
@@ -10,19 +13,24 @@ use crate::hooks::{HOOK_TIMEOUT, TeamCommand, parse_team_command, run_team_comma
 use crate::opencode_session;
 use crate::protocol::identity_text;
 
-/// The mailbox of a session, checked.
+/// @brief Gives the mailbox of a session.
 ///
-/// # Errors
-/// Returns an error for an invalid session id.
+/// @param session The `OpenCode` session id.
+/// @return The mailbox name.
+/// @throws String The session id is not valid.
 pub fn mailbox(session: &str) -> Result<String, String> {
     opencode_session::mailbox(session).map_err(|_| "invalid OpenCode session id".to_owned())
 }
 
-/// The identity and protocol text for the system prompt of a session. It also binds the mailbox
-/// to the session, so wakes reach this session.
+/// @brief Gives the identity and the protocol of a session.
 ///
-/// # Errors
-/// Returns an error for an invalid session, or when the daemon is down or refuses.
+/// @details The plugin puts this text in the system prompt of the session.
+/// The request also binds the mailbox to the session, so that wakes go to this session.
+///
+/// @param client The client of the daemon.
+/// @param session The `OpenCode` session id.
+/// @return The identity and protocol text.
+/// @throws String The session id is not valid, or the daemon does not answer, or the daemon refuses the request.
 pub async fn context(client: &Client, session: &str) -> Result<String, String> {
     let mailbox = mailbox(session)?;
     let path = format!("/claude/hook?agent={mailbox}&event=SessionStart");
@@ -35,10 +43,14 @@ pub async fn context(client: &Client, session: &str) -> Result<String, String> {
         .map_or_else(|| identity_text(&mailbox), str::to_owned))
 }
 
-/// Runs `/lead x`, `/join x` or `/solo` for a session.
+/// @brief Runs `/lead x`, `/join x` or `/solo` for a session.
 ///
-/// # Errors
-/// Returns the usage, or the refusal of the daemon.
+/// @param client The client of the daemon.
+/// @param session The `OpenCode` session id.
+/// @param command The command name: `lead`, `join` or `solo`.
+/// @param arguments The arguments of the command, for example the team name.
+/// @return The result of the command and the new protocol.
+/// @throws String The usage of the command, or the refusal of the daemon.
 pub async fn team(
     client: &Client,
     session: &str,
@@ -57,10 +69,14 @@ pub async fn team(
         .map_err(|error| error.to_string())
 }
 
-/// Calls one daemon tool for a session, and returns its text and whether it failed.
+/// @brief Calls one daemon tool for a session.
 ///
-/// # Errors
-/// Returns an error when the daemon is down or refuses the request.
+/// @param client The client of the daemon.
+/// @param session The `OpenCode` session id.
+/// @param name The tool name.
+/// @param arguments The tool arguments.
+/// @return The text of the result, and true when the tool failed.
+/// @throws ClientError The daemon does not answer, or the daemon refuses the request.
 pub async fn tool(
     client: &Client,
     session: &str,

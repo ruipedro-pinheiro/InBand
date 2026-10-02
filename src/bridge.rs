@@ -1,4 +1,13 @@
-//! The message bus: send, read, wait, subscribe, roles, presence, wakes and the security checks.
+//! @file bridge.rs
+//! @brief The message bus: it stores, routes and delivers the mail, and does all the security checks.
+//!
+//! @details Each operation receives a [`Caller`]: the authenticated client, and the session that signed the request.
+//! The bus then checks three things:
+//! - identity: the caller can act only for the mailbox of its own session;
+//! - routing: a worker writes only to its lead, and no mail goes out of a team;
+//! - content: the bus cleans the text, refuses tokens, and limits the rate and the size.
+//!
+//! The HTTP layer and the MCP layer only translate the requests. All the rules are here.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,25 +28,38 @@ use crate::protocol::Role;
 use crate::sanitize::{contains_token, sanitize};
 use crate::wake::{WakeDispatch, WakeInput, WakeResult};
 
+/// @brief The maximum number of waits at the same time for one mailbox.
 const MAX_PENDING_WAITS_PER_AGENT: usize = 8;
+/// @brief The maximum number of long polls at the same time for one mailbox or family.
 const MAX_PENDING_SUBSCRIPTIONS_PER_TARGET: usize = 8;
-/// Clients without a progress token time out at 60 s, so short waits stay under it.
+/// @brief The maximum wait for a client that sends no progress token.
+///
+/// @details Such a client stops a request after 60 s. The wait thus stays below this limit.
 const MAX_WAIT_SECONDS: u64 = 50;
+/// @brief The maximum wait for a client that receives progress notifications.
 const MAX_LONG_WAIT_SECONDS: u64 = 1800;
+/// @brief The maximum time of one long poll of the shim.
 const MAX_SUBSCRIBE_SECONDS: u64 = 300;
+/// @brief The maximum number of messages in one history request.
 const MAX_HISTORY: u32 = 500;
-/// Messages one sender may send per minute.
+/// @brief The maximum number of messages that one sender can send in one minute.
 const SEND_RATE_PER_MINUTE: usize = 30;
-/// Unread messages a recipient may hold before new direct mail is refused.
+/// @brief The maximum number of unread messages for one mailbox.
+///
+/// @details When a mailbox has this number, the bus refuses new mail for it.
 const MAX_UNREAD_PER_RECIPIENT: i64 = 200;
+/// @brief The time without activity after which `ping` shows an agent as stale.
 const STALE_AFTER_SECONDS: u64 = 1800;
-/// The messages that the viewer `?1` sent or received. `?1` NULL selects every message.
+/// @brief The SQL condition for the mail that the viewer `?1` sent or received.
+///
+/// @details When `?1` is NULL, the condition selects all messages.
 const VIEWER_MAIL_SQL: &str = "(?1 IS NULL OR m.sender = ?1
      OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND d.recipient = ?1))";
 
-/// `name`, `first_seen` and `last_seen` of the agents table.
+/// @brief The `name`, `first_seen` and `last_seen` columns of the `agents` table.
 type AgentRow = (String, String, Option<String>);
 
+/// @brief The reasons to refuse an operation. The text of each reason goes back to the agent.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
     #[error("invalid {field} \"{raw}\": expected 1-64 chars of [a-z0-9_-]")]
@@ -84,7 +106,7 @@ pub enum BridgeError {
     Db(#[from] rusqlite::Error),
 }
 
-/// Who calls the bridge: the authenticated client, and the session that signed the request.
+/// @brief The caller of an operation: the authenticated client, and its session.
 #[derive(Debug, Clone)]
 pub struct Caller {
     pub auth: AuthInfo,
@@ -92,6 +114,7 @@ pub struct Caller {
     pub session: Option<String>,
 }
 
+/// @brief One message, as the agents receive it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MessageRow {
     pub id: i64,
@@ -99,47 +122,64 @@ pub struct MessageRow {
     pub recipient: String,
     pub content: String,
     pub created_at: String,
+    /// The role of the sender when it sent the message. The daemon sets it, never the sender.
     pub sender_role: Option<String>,
 }
 
+/// @brief The result of a send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendResult {
     pub message_id: i64,
     pub sent_at: String,
+    /// The recipient in the request, for example `codex` or `all`.
     pub requested_to: String,
+    /// The recipient after the alias: a mailbox, or `all`.
     pub resolved_to: String,
+    /// The mailboxes that received the message.
     pub delivered_to: Vec<String>,
+    /// For each recipient: how the daemon told it, for example `pushed-to-channel` or `wake-dispatched`.
     pub notify: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
+/// @brief One agent, as `ping` shows it.
+///
+/// @details Each agent has all the fields, with null for an empty value.
+/// The rows thus have the same form, and `ping` can show them as one TOON table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentStatus {
     pub name: String,
     pub first_seen: String,
     pub last_seen: Option<String>,
-    // Every agent carries every field, null when empty: uniform rows let ping use a TOON table.
+    /// The short name of a Codex session.
     pub display_label: Option<String>,
     pub cwd: Option<String>,
+    /// `active` or `idle`, for a Codex session.
     pub lifecycle: Option<String>,
     pub team: Option<String>,
     pub role: &'static str,
+    /// `online`, `offline`, `unknown`, or `stale` for an online agent without activity for 30 minutes.
     pub connected: String,
+    /// The time since the last activity.
     pub idle_seconds: Option<u64>,
+    /// True when the agent waits for mail now.
     pub waiting_now: bool,
     pub unread: i64,
 }
 
+/// @brief One wake attempt, as `ping` shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WakeRecord {
     pub recipient: String,
     pub created_at: String,
+    /// 1 when the wake reached the client, else 0.
     pub ok: i64,
     pub detail: Option<String>,
 }
 
+/// @brief The result of `ping`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -153,12 +193,15 @@ pub struct Status {
     pub last_wakes: Vec<WakeRecord>,
 }
 
+/// @brief The result of a history request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct History {
     pub messages: Vec<MessageRow>,
+    /// The number of messages that the caller can see, in all pages.
     pub total: usize,
 }
 
+/// @brief The result of a team command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TeamChange {
     pub mailbox: String,
@@ -171,7 +214,7 @@ pub struct TeamChange {
     pub replaced_lead: Option<String>,
 }
 
-/// Where a mailbox stands: the input of the protocol text.
+/// @brief The position of a mailbox: its role, its team and its lead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionContext {
     pub mailbox: String,
@@ -181,7 +224,7 @@ pub struct SessionContext {
 }
 
 impl SessionContext {
-    /// The protocol text for this mailbox.
+    /// @brief Makes the protocol text for this mailbox.
     #[must_use]
     pub fn protocol(&self) -> String {
         crate::protocol::protocol_text(
@@ -193,6 +236,7 @@ impl SessionContext {
     }
 }
 
+/// @brief A new message, as the bus sends it to the waits and the long polls.
 #[derive(Debug, Clone)]
 struct Delivery {
     id: i64,
@@ -200,16 +244,21 @@ struct Delivery {
     content: String,
     created_at: String,
     sender_role: String,
+    /// The mailboxes that received the message.
     recipients: Vec<String>,
 }
 
+/// @brief The waits and the long polls in progress.
 #[derive(Debug, Default)]
 struct Listeners {
+    /// The number of waits for each mailbox.
     waits: HashMap<String, usize>,
+    /// The long polls: an id, the mailbox or family prefix, and true for one exact mailbox.
     subscriptions: Vec<(u64, String, bool)>,
 }
 
 impl Listeners {
+    /// @brief Tells if a long poll waits for the mail of a mailbox.
     fn subscription_matches(&self, recipient: &str) -> bool {
         self.subscriptions
             .iter()
@@ -217,6 +266,11 @@ impl Listeners {
     }
 }
 
+/// @brief Tells if a mailbox matches the target of a long poll.
+///
+/// @param recipient The mailbox.
+/// @param prefix The mailbox, or the family prefix, of the long poll.
+/// @param exact True when the long poll is for one mailbox. False for a whole family, for example all `claude-*`.
 fn target_matches(recipient: &str, prefix: &str, exact: bool) -> bool {
     recipient == prefix
         || (!exact
@@ -225,6 +279,7 @@ fn target_matches(recipient: &str, prefix: &str, exact: bool) -> bool {
                 .is_some_and(|rest| rest.starts_with('-')))
 }
 
+/// @brief A stored message and its recipients.
 struct Routed {
     id: i64,
     resolved_to: String,
@@ -232,37 +287,51 @@ struct Routed {
     sender_role: String,
 }
 
+/// @brief The Codex wake in progress for one mailbox.
+///
+/// @details A new wake gets a new generation number. An old wake task sees that its number is old, and stops.
 struct RetryState {
     generation: u64,
+    /// The task that sends the wakes, to stop it.
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// @brief Locks a mutex.
+///
+/// @details A panic in another thread can leave a mutex "poisoned". The data in these mutexes stays valid, so the daemon continues to use it.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A panic while holding the lock leaves plain data behind, so keep serving.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The message bus.
+/// @brief The message bus.
 pub struct Bridge {
     db: Mutex<Connection>,
     config: BridgeConfig,
+    /// The tokens of all clients. A message that contains one is refused.
     secrets: Vec<String>,
     wake: Arc<dyn WakeDispatch>,
+    /// Each new message goes to the waits and the long polls through this channel.
     events: broadcast::Sender<Arc<Delivery>>,
     listeners: Mutex<Listeners>,
+    /// The send times of the last minute, for each sender.
     send_times: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// The Codex wake in progress, for each mailbox.
     retries: Mutex<HashMap<String, RetryState>>,
+    /// The source of the ids of the long polls and of the wake generations.
     next_id: AtomicU64,
     started_at: String,
 }
 
-/// Decrements a listener count when the waiting future ends, also when a client disconnects.
+/// @brief Decreases the wait count of a mailbox when a wait ends.
+///
+/// @details The count decreases also when the client disconnects during the wait.
 struct WaitGuard<'a> {
     bridge: &'a Bridge,
     mailbox: String,
 }
 
 impl Drop for WaitGuard<'_> {
+    /// @brief Decreases the wait count.
     fn drop(&mut self) {
         let mut listeners = lock(&self.bridge.listeners);
         if let Some(count) = listeners.waits.get_mut(&self.mailbox) {
@@ -274,12 +343,14 @@ impl Drop for WaitGuard<'_> {
     }
 }
 
+/// @brief Removes a long poll from the list when it ends.
 struct SubscriptionGuard<'a> {
     bridge: &'a Bridge,
     id: u64,
 }
 
 impl Drop for SubscriptionGuard<'_> {
+    /// @brief Removes the long poll.
     fn drop(&mut self) {
         lock(&self.bridge.listeners)
             .subscriptions
@@ -287,6 +358,7 @@ impl Drop for SubscriptionGuard<'_> {
     }
 }
 
+/// @brief Runs a query that gives messages.
 fn message_rows(
     db: &Connection,
     sql: &str,
@@ -306,12 +378,19 @@ fn message_rows(
     rows.collect()
 }
 
+/// @brief The unread messages of a mailbox, the oldest first.
 const UNREAD_SQL: &str =
     "SELECT m.id, m.sender, m.recipient, m.content, m.created_at, m.sender_role
      FROM deliveries d JOIN messages m ON m.id = d.message_id
      WHERE d.recipient = ?1 AND d.read_at IS NULL ORDER BY m.id ASC";
 
 impl Bridge {
+    /// @brief Makes the message bus.
+    ///
+    /// @param db The database.
+    /// @param config The configuration of the daemon.
+    /// @param secrets The tokens of all clients. A message that contains one is refused.
+    /// @param wake The dispatcher of the wakes.
     #[must_use]
     pub fn new(
         db: Connection,
@@ -334,8 +413,11 @@ impl Bridge {
         })
     }
 
-    /// # Errors
-    /// Returns [`BridgeError::InvalidName`] for a name outside `[a-z0-9_-]{1,64}`.
+    /// @brief Checks a mailbox name and changes it to lower case.
+    ///
+    /// @param raw The name from the request.
+    /// @param field The request field, for the error text.
+    /// @throws BridgeError::InvalidName The name is not 1 to 64 chars of `[a-z0-9_-]`.
     pub fn normalize_agent(raw: &str, field: &'static str) -> Result<String, BridgeError> {
         let name = raw.trim().to_ascii_lowercase();
         if is_agent_name(&name) {
@@ -348,6 +430,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Refuses an alias (`codex` or `all`) as the identity of a sender.
     fn require_concrete(name: &str) -> Result<(), BridgeError> {
         if name == CODEX_FAMILY || name == "all" {
             Err(BridgeError::AliasIdentity(name.to_owned()))
@@ -356,6 +439,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Refuses a `codex-<uuid>` mailbox that the Codex hook did not register.
     fn require_registered_codex(db: &Connection, name: &str) -> Result<(), BridgeError> {
         if codex_session::is_canonical_mailbox(name)
             && codex_session::by_mailbox(db, name)?.is_none()
@@ -365,6 +449,7 @@ impl Bridge {
         Ok(())
     }
 
+    /// @brief Adds a mailbox to the list of agents, or updates its last-seen time.
     fn touch_agent(db: &mut Connection, name: &str) -> Result<(), BridgeError> {
         Self::require_concrete(name)?;
         if codex_session::is_canonical_mailbox(name) {
@@ -380,6 +465,9 @@ impl Bridge {
         Ok(())
     }
 
+    /// @brief Gives the team and the role of a mailbox.
+    ///
+    /// @return `None` for a solo mailbox.
     fn membership_of(db: &Connection, mailbox: &str) -> rusqlite::Result<Option<(String, Role)>> {
         db.query_row(
             "SELECT team, role FROM members WHERE mailbox = ?1",
@@ -397,6 +485,7 @@ impl Bridge {
         .optional()
     }
 
+    /// @brief Gives the lead of a team, or `None` when the team has no lead.
     fn lead_of_team(db: &Connection, team: &str) -> rusqlite::Result<Option<String>> {
         db.query_row(
             "SELECT mailbox FROM members WHERE team = ?1 AND role = 'lead'",
@@ -406,26 +495,29 @@ impl Bridge {
         .optional()
     }
 
-    /// The team and role of a mailbox, or `None` for a solo session.
+    /// @brief Gives the team and the role of a mailbox.
     ///
-    /// # Errors
-    /// Returns SQLite errors.
+    /// @return `None` for a solo mailbox.
+    /// @throws BridgeError::Db The database fails.
     pub fn membership(&self, name: &str) -> Result<Option<(String, Role)>, BridgeError> {
         Ok(Self::membership_of(&lock(&self.db), name)?)
     }
 
-    /// # Errors
-    /// Returns SQLite errors.
+    /// @brief Gives the lead of a team.
+    ///
+    /// @throws BridgeError::Db The database fails.
     pub fn team_lead(&self, team: &str) -> Result<Option<String>, BridgeError> {
         Ok(Self::lead_of_team(&lock(&self.db), team)?)
     }
 
-    /// # Errors
-    /// Returns SQLite errors.
+    /// @brief Gives the role of a mailbox. A mailbox in no team is solo.
+    ///
+    /// @throws BridgeError::Db The database fails.
     pub fn role_of(&self, name: &str) -> Result<Role, BridgeError> {
         Ok(self.membership(name)?.map_or(Role::Solo, |(_, role)| role))
     }
 
+    /// @brief Gives the session that is bound to a mailbox.
     fn bound_session(db: &Connection, mailbox: &str) -> rusqlite::Result<Option<String>> {
         db.query_row(
             "SELECT session_key FROM sessions WHERE mailbox = ?1",
@@ -435,13 +527,15 @@ impl Bridge {
         .optional()
     }
 
-    /// Binds a mailbox to the session that signs the request. Called from signed `SessionStart`
-    /// hooks. A binding is never moved to another session: that would let any session take the
-    /// mailbox of another one, the lead included.
+    /// @brief Binds a mailbox to the session that signs the request.
     ///
-    /// # Errors
-    /// Returns an error for an invalid mailbox, a token that cannot use it, a request without a
-    /// session, a mailbox bound to another session, or SQLite.
+    /// @details The signed `SessionStart` hook calls this function.
+    /// A binding never moves to another session.
+    /// Without this rule, a session could take the mailbox of another session, also the mailbox of the lead.
+    ///
+    /// @param caller The caller. Its request must be signed for a session.
+    /// @param mailbox_raw The mailbox to bind.
+    /// @throws BridgeError The name is not valid, the token cannot use the mailbox, the request has no session, the mailbox has another session, or the database fails.
     pub fn bind_session(&self, caller: &Caller, mailbox_raw: &str) -> Result<(), BridgeError> {
         let mailbox = Self::normalize_agent(mailbox_raw, "mailbox")?;
         Self::require_concrete(&mailbox)?;
@@ -470,13 +564,15 @@ impl Bridge {
         Ok(())
     }
 
-    /// True for a mailbox whose name says which session owns it: `codex-<session uuid>`, or
-    /// `opencode-<digest of the session id>`.
+    /// @brief Tells if the name of a mailbox tells its session.
+    ///
+    /// @details This is true for `codex-<session uuid>` and for `opencode-<digest of the session id>`.
     fn session_owned(mailbox: &str) -> bool {
         codex_session::is_canonical_mailbox(mailbox)
             || opencode_session::is_session_mailbox(mailbox)
     }
 
+    /// @brief Tells if a session owns a mailbox whose name tells its session.
     fn session_owns(session: &str, mailbox: &str) -> bool {
         match mailbox.strip_prefix("codex-") {
             Some(uuid) if codex_session::is_canonical_mailbox(mailbox) => {
@@ -486,9 +582,10 @@ impl Bridge {
         }
     }
 
-    /// Codex puts the calling session in the `_meta.sessionId` of every tool call, and OpenCode gives
-    /// it to the tools of the InBand plugin. The model cannot write either, so a request for a
-    /// session-owned mailbox must carry the session that owns it.
+    /// @brief Makes sure that a request for a session-owned mailbox comes from that session.
+    ///
+    /// @details Codex writes the session in the `_meta` of each tool call. `OpenCode` gives it to the tools of the InBand plugin.
+    /// The model cannot write these values.
     fn require_owner_session(caller: &Caller, mailbox: &str) -> Result<(), BridgeError> {
         match caller.session.as_deref() {
             Some(session) if Self::session_owns(session, mailbox) => Ok(()),
@@ -497,6 +594,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Makes sure that the token of the caller can use a mailbox.
     fn require_token_scope(
         caller: &Caller,
         field: &'static str,
@@ -518,11 +616,11 @@ impl Bridge {
         }
     }
 
-    /// Checks that the caller may act as `mailbox`.
+    /// @brief Makes sure that the caller can act for a mailbox.
     ///
-    /// Sessions of one family share a token, so the token alone does not say which session calls.
-    /// Only a request signed for the session bound to the mailbox proves it. The one exception is a
-    /// token whose patterns name this mailbox exactly: no other mailbox can use it.
+    /// @details All the sessions of one client use the same token. The token thus does not tell which session calls.
+    /// Only a request signed for the session of the mailbox proves it.
+    /// There is one exception: a token whose only pattern is this exact mailbox. No other mailbox can use this token.
     fn check_acting(
         db: &Connection,
         caller: &Caller,
@@ -544,7 +642,16 @@ impl Bridge {
         }
     }
 
-    /// Star routing inside one team. A solo session neither sends nor receives.
+    /// @brief Applies the routing rules of the teams.
+    ///
+    /// @details The rules are:
+    /// - a solo session cannot send;
+    /// - only the lead can send to `all`;
+    /// - the recipient must be in the team of the sender;
+    /// - a worker can send only to its lead.
+    ///
+    /// @param sender The team and the role of the sender. `None` for a solo sender.
+    /// @param to The recipient.
     fn check_routing(
         db: &Connection,
         sender: Option<&(String, Role)>,
@@ -580,6 +687,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Refuses the message when the sender sent too many messages in the last minute.
     fn check_rate(&self, sender: &str) -> Result<(), BridgeError> {
         let now = Instant::now();
         let mut times = lock(&self.send_times);
@@ -597,6 +705,9 @@ impl Bridge {
         Ok(())
     }
 
+    /// @brief Writes one line in the audit log.
+    ///
+    /// @details The log keeps the size and the SHA-256 digest of the content, not the content.
     fn audit(
         &self,
         caller: &Caller,
@@ -618,6 +729,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Writes a refusal in the audit log, and gives back the error.
     fn refuse(
         &self,
         caller: &Caller,
@@ -637,10 +749,18 @@ impl Bridge {
         error
     }
 
-    /// Sends a message after the identity, routing, content and rate checks.
+    /// @brief Sends a message.
     ///
-    /// # Errors
-    /// Returns the first failed check. Refusals are written to the audit log.
+    /// @details The checks are, in this order: the names, the content, the rate, then the identity and the routing.
+    /// The bus then stores the message, writes the audit log, tells the waits, and wakes the recipient when necessary.
+    ///
+    /// @param caller The caller.
+    /// @param from_raw The sender mailbox.
+    /// @param to_raw The recipient: a mailbox, `codex` (the latest Codex session) or `all` (the team of the lead).
+    /// @param content The text of the message.
+    /// @return The id of the message, its recipients, and what the bus did to tell each recipient.
+    /// @throws BridgeError The first check that fails.
+    /// The audit log keeps the refusals for a token in the content, the rate, the identity and the routing.
     pub fn send(
         self: &Arc<Self>,
         caller: &Caller,
@@ -682,7 +802,6 @@ impl Bridge {
             .map_err(|error| self.refuse(caller, &from, &requested_to, content, error))?;
 
         let now = iso_now();
-        // One transaction: a concurrent registration must not change the target between check and insert.
         let routed = {
             let mut db = lock(&self.db);
             Self::route_and_insert(&mut db, caller, &from, &requested_to, &cleaned, &now)
@@ -707,7 +826,6 @@ impl Bridge {
                 })
                 .unzip()
         };
-        // No receiver means no listener: the send still succeeded.
         let _ = self.events.send(Arc::new(Delivery {
             id,
             sender: from,
@@ -745,7 +863,11 @@ impl Bridge {
         })
     }
 
-    /// Checks identity, target and routing, then stores the message, all in one transaction.
+    /// @brief Checks the identity, the recipient and the routing, then stores the message.
+    ///
+    /// @details All this is one transaction.
+    /// Thus a registration at the same time cannot change the recipient between the check and the storage.
+    /// The admin token belongs to the user, who is in no team. The routing rules thus do not apply to it.
     fn route_and_insert(
         db: &mut Connection,
         caller: &Caller,
@@ -769,7 +891,6 @@ impl Bridge {
             return Err(BridgeError::SelfSend);
         }
         let membership = Self::membership_of(&tx, from)?;
-        // The admin token belongs to the user, who is outside the teams.
         if !caller.auth.admin {
             Self::check_routing(&tx, membership.as_ref(), &resolved_to)?;
         }
@@ -787,7 +908,6 @@ impl Bridge {
 
         Self::touch_agent_tx(&tx, from)?;
         let recipients: Vec<String> = if resolved_to == "all" {
-            // `all` is the sender's team. Only the admin, outside any team, reaches every agent.
             if let Some((team, _)) = &membership {
                 let mut statement = tx.prepare(
                     "SELECT mailbox FROM members WHERE team = ?1 AND mailbox != ?2 ORDER BY mailbox",
@@ -827,6 +947,7 @@ impl Bridge {
         })
     }
 
+    /// @brief Updates the last-seen time of an agent, in a transaction.
     fn touch_agent_tx(tx: &rusqlite::Transaction<'_>, name: &str) -> Result<(), BridgeError> {
         let now = iso_now();
         if codex_session::is_canonical_mailbox(name) {
@@ -847,8 +968,14 @@ impl Bridge {
         Ok(())
     }
 
-    /// Mailboxes join and leave teams only through these three calls. The daemon exposes them to
-    /// signed requests from the user's own commands, never as MCP tools, so a model cannot call them.
+    /// @brief Checks a request that changes the team of a mailbox.
+    ///
+    /// @details Only the team commands of the user call this function: `/lead`, `/join` and `/solo`.
+    /// No MCP tool calls it, so a model cannot change a team.
+    /// A team change needs a signed session, also for a token whose only pattern is this mailbox.
+    /// The admin token of the user is the only exception.
+    ///
+    /// @return The mailbox name, and the locked database.
     fn prepare_member(
         &self,
         caller: &Caller,
@@ -858,8 +985,6 @@ impl Bridge {
         Self::require_concrete(&mailbox)?;
         let mut db = lock(&self.db);
         Self::require_registered_codex(&db, &mailbox)?;
-        // A team change needs the signed session even for an exact token: the OpenCode model can run
-        // its slash commands itself, so only the user's own CLI, with the admin token, moves it.
         if !caller.auth.admin && caller.session.is_none() {
             return Err(BridgeError::SessionRequired(mailbox));
         }
@@ -868,8 +993,10 @@ impl Bridge {
         Ok((mailbox, db))
     }
 
-    /// Daemon notices about team changes. They pass the checks as the admin, since they come from
-    /// the daemon itself, and a failed notice never undoes the change.
+    /// @brief Sends a notice of the daemon about a team change.
+    ///
+    /// @details The notice passes the checks as the admin, because it comes from the daemon.
+    /// When the notice fails, the team change stays.
     fn notify(self: &Arc<Self>, from: &str, to: &str, content: &str) {
         let daemon = Caller {
             auth: AuthInfo::disabled(),
@@ -880,11 +1007,16 @@ impl Bridge {
         }
     }
 
-    /// Makes `mailbox_raw` the lead of `team_raw`, and creates the team when it does not exist.
-    /// The previous lead of that team becomes a worker and gets a notice.
+    /// @brief Makes a mailbox the lead of a team.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a mailbox bound to another session, or SQLite.
+    /// @details The function creates the team when it does not exist.
+    /// The previous lead of the team becomes a worker and receives a notice.
+    ///
+    /// @param caller The caller, signed for the session of the mailbox.
+    /// @param mailbox_raw The new lead.
+    /// @param team_raw The team name.
+    /// @return The change.
+    /// @throws BridgeError The name is not valid, the request does not come from the session of the mailbox, or the database fails.
     pub fn set_lead(
         self: &Arc<Self>,
         caller: &Caller,
@@ -925,10 +1057,15 @@ impl Bridge {
         })
     }
 
-    /// Adds `mailbox_raw` to `team_raw` as a worker. The lead of the team gets a notice.
+    /// @brief Adds a mailbox to a team as a worker.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a mailbox bound to another session, or SQLite.
+    /// @details The lead of the team receives a notice.
+    ///
+    /// @param caller The caller, signed for the session of the mailbox.
+    /// @param mailbox_raw The new worker.
+    /// @param team_raw The team name.
+    /// @return The change.
+    /// @throws BridgeError The name is not valid, the request does not come from the session of the mailbox, or the database fails.
     pub fn join(
         self: &Arc<Self>,
         caller: &Caller,
@@ -961,10 +1098,12 @@ impl Bridge {
         })
     }
 
-    /// Removes `mailbox_raw` from its team: the session becomes solo. The lead gets a notice.
+    /// @brief Removes a mailbox from its team. The session becomes solo.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a mailbox bound to another session, or SQLite.
+    /// @details The lead of the team receives a notice.
+    ///
+    /// @return The change.
+    /// @throws BridgeError The name is not valid, the request does not come from the session of the mailbox, or the database fails.
     pub fn leave(
         self: &Arc<Self>,
         caller: &Caller,
@@ -990,8 +1129,11 @@ impl Bridge {
         })
     }
 
-    /// Normalizes a mailbox that the caller reads or acts for, checks that it may, and records the
-    /// mailbox as seen.
+    /// @brief Checks the mailbox that the caller reads or acts for.
+    ///
+    /// @details The function also updates the last-seen time of the mailbox.
+    ///
+    /// @return The mailbox name in lower case.
     fn acting_mailbox(
         &self,
         caller: &Caller,
@@ -1007,14 +1149,14 @@ impl Bridge {
         Ok(mailbox)
     }
 
+    /// @brief Gives the unread messages of a mailbox.
     fn unread_of(&self, recipient: &str) -> Result<Vec<MessageRow>, BridgeError> {
         Ok(message_rows(&lock(&self.db), UNREAD_SQL, [recipient])?)
     }
 
-    /// The role, team and lead of a mailbox, for the protocol text of its own hooks.
+    /// @brief Gives the role, the team and the lead of a mailbox, for its protocol text.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    /// @throws BridgeError The name is not valid, the caller cannot act for the mailbox, or the database fails.
     pub fn session_context(
         &self,
         caller: &Caller,
@@ -1036,15 +1178,15 @@ impl Bridge {
         })
     }
 
+    /// @brief Gives the start time of the daemon.
     #[must_use]
     pub fn started_at(&self) -> &str {
         &self.started_at
     }
 
-    /// Unread mail without marking it read.
+    /// @brief Gives the unread messages of a mailbox, and keeps them unread.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    /// @throws BridgeError The name is not valid, the caller cannot act for the mailbox, or the database fails.
     pub fn peek_unread(
         &self,
         caller: &Caller,
@@ -1054,10 +1196,12 @@ impl Bridge {
         self.unread_of(&recipient)
     }
 
-    /// Unread mail, marked read. The only call that consumes mail.
+    /// @brief Gives the unread messages of a mailbox, and marks them as read.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    /// @details This is the only operation that marks mail as read.
+    /// When the answer is lost, the mail thus stays unread.
+    ///
+    /// @throws BridgeError The name is not valid, the caller cannot act for the mailbox, or the database fails.
     pub fn fetch_unread(
         &self,
         caller: &Caller,
@@ -1083,6 +1227,7 @@ impl Bridge {
         Ok(rows)
     }
 
+    /// @brief Gives the number of unread messages of a mailbox.
     fn unread_count(&self, recipient: &str) -> Result<i64, BridgeError> {
         Ok(lock(&self.db).query_row(
             "SELECT COUNT(*) FROM deliveries WHERE recipient = ?1 AND read_at IS NULL",
@@ -1091,11 +1236,16 @@ impl Bridge {
         )?)
     }
 
-    /// Blocks until mail arrives or the timeout ends, then returns a preview of the unread mail.
+    /// @brief Waits for mail, then gives the unread messages without marking them as read.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, too many
-    /// waits, or SQLite.
+    /// @details The wait ends when mail for the mailbox arrives, or when the time ends.
+    /// It also ends when the bus loses events or stops. In all these cases, the function reads the unread mail again.
+    ///
+    /// @param caller The caller.
+    /// @param for_raw The mailbox.
+    /// @param timeout_seconds The maximum wait.
+    /// @param long_wait True when the client receives progress notifications. Else the wait stops after 50 s.
+    /// @throws BridgeError The name is not valid, the caller cannot act for the mailbox, the mailbox has too many waits, or the database fails.
     pub async fn wait_for_messages(
         &self,
         caller: &Caller,
@@ -1131,17 +1281,15 @@ impl Bridge {
         loop {
             match tokio::time::timeout_at(deadline, events.recv()).await {
                 Ok(Ok(delivery)) if !delivery.recipients.contains(&recipient) => {}
-                // A matching delivery, a lagged receiver, a closed channel or the timeout: re-read.
                 _ => break,
             }
         }
         self.unread_of(&recipient)
     }
 
-    /// Long poll for one exact mailbox, used by the channel shim of that mailbox's session.
+    /// @brief Long poll for one mailbox. The shim of the session uses it.
     ///
-    /// # Errors
-    /// Returns an error for a caller that cannot act as the mailbox. See also [`Self::subscribe`].
+    /// @throws BridgeError The caller cannot act for the mailbox. See also `subscribe`.
     pub async fn subscribe_mailbox(
         &self,
         caller: &Caller,
@@ -1154,11 +1302,11 @@ impl Bridge {
             .await
     }
 
-    /// Long poll for a whole `prefix-*` family. It reads the mail of many sessions, so only the
-    /// admin token may use it.
+    /// @brief Long poll for a whole family, for example all `claude-*`.
     ///
-    /// # Errors
-    /// Returns an error for a caller without the admin token. See also [`Self::subscribe`].
+    /// @details This poll reads the mail of many sessions. Only the admin token can use it.
+    ///
+    /// @throws BridgeError The caller is not the admin. See also `subscribe`.
     pub async fn subscribe_family(
         &self,
         caller: &Caller,
@@ -1177,11 +1325,11 @@ impl Bridge {
             .await
     }
 
-    /// Returns unread mail after `after_id` at once, otherwise waits for the next delivery.
-    /// Old shims send no cursor and only receive live mail.
+    /// @brief Gives the unread mail after `after_id` at once, or else waits for the next message.
     ///
-    /// # Errors
-    /// Returns an error for too many subscriptions or SQLite.
+    /// @details An old shim sends no `after_id`. It receives only the new mail.
+    ///
+    /// @throws BridgeError There are too many long polls for this target, or the database fails.
     async fn subscribe(
         &self,
         prefix: &str,
@@ -1250,10 +1398,9 @@ impl Bridge {
         }
     }
 
-    /// Records the online or offline state that the hooks of a session report.
+    /// @brief Keeps the online or offline state that the hooks of a session send.
     ///
-    /// # Errors
-    /// Returns an error for an invalid name, a caller that cannot act as the mailbox, or SQLite.
+    /// @throws BridgeError The name is not valid, the caller cannot act for the mailbox, or the database fails.
     pub fn set_presence(
         &self,
         caller: &Caller,
@@ -1268,6 +1415,9 @@ impl Bridge {
         Ok(())
     }
 
+    /// @brief Gives the presence of a mailbox: `online`, `offline` or `unknown`.
+    ///
+    /// @details A mailbox with a wait in progress is online.
     fn presence_of(&self, name: &str) -> Result<&'static str, BridgeError> {
         if lock(&self.listeners).waits.contains_key(name) {
             return Ok("online");
@@ -1291,15 +1441,17 @@ impl Bridge {
         })
     }
 
-    /// Past messages, oldest first.
+    /// @brief Gives past messages, the oldest first.
     ///
-    /// A session sees its own mail: what it sent and what was delivered to it. Routing keeps every
-    /// message of a team between the lead and one member, so a lead sees its whole team. Only the
-    /// admin token, without a viewer, sees every message.
+    /// @details A session sees its own mail: the mail that it sent, and the mail that it received.
+    /// Each message of a team goes between the lead and one member. A lead thus sees its whole team.
+    /// Only the admin token, without a viewer, sees all messages.
     ///
-    /// # Errors
-    /// Returns an error for a non-admin caller without a viewer, a caller that cannot act as the
-    /// viewer, or SQLite.
+    /// @param caller The caller.
+    /// @param viewer The mailbox whose mail to show. Only the admin can omit it.
+    /// @param limit The maximum number of messages.
+    /// @param before_id Gives only the messages before this id, for pages.
+    /// @throws BridgeError The caller is not the admin and gives no viewer, the caller cannot act for the viewer, or the database fails.
     pub fn history(
         &self,
         caller: &Caller,
@@ -1335,6 +1487,7 @@ impl Bridge {
         })
     }
 
+    /// @brief Gives the team and the role of each member of a team.
     fn all_members(db: &Connection) -> rusqlite::Result<HashMap<String, (String, Role)>> {
         let mut statement = db.prepare("SELECT mailbox, team, role FROM members")?;
         let rows = statement.query_map([], |row| {
@@ -1349,14 +1502,12 @@ impl Bridge {
         rows.collect()
     }
 
-    /// Agents, presence, roles, unread counts and the last wakes.
+    /// @brief Gives the agents, their presence, their roles, their unread mail, and the last wakes.
     ///
-    /// With a `viewer`, the list holds only the viewer's team, or only the viewer when it is solo.
-    /// Only the admin token may omit the viewer, and it then sees every agent.
+    /// @details With a viewer, the list contains only the team of the viewer, or only the viewer when it is solo.
+    /// Only the admin token can omit the viewer. It then sees all agents.
     ///
-    /// # Errors
-    /// Returns an error for a non-admin caller without a viewer, a caller that cannot act as the
-    /// viewer, or SQLite.
+    /// @throws BridgeError The caller is not the admin and gives no viewer, the caller cannot act for the viewer, or the database fails.
     pub fn status(&self, caller: &Caller, viewer_raw: Option<&str>) -> Result<Status, BridgeError> {
         let viewer = match viewer_raw {
             Some(raw) => Some(self.acting_mailbox(caller, raw, "from")?),
@@ -1446,7 +1597,9 @@ impl Bridge {
         })
     }
 
-    /// The last five wakes. A team view keeps only the wakes of its listed agents.
+    /// @brief Gives the last five wakes.
+    ///
+    /// @details A team view keeps only the wakes of the agents in the list.
     fn last_wakes(
         &self,
         team_view: bool,
@@ -1475,10 +1628,11 @@ impl Bridge {
         Ok(wakes)
     }
 
-    /// Deletes all messages and deliveries, for the admin token only. The audit log stays.
+    /// @brief Deletes all messages and deliveries. The audit log stays.
     ///
-    /// # Errors
-    /// Returns an error for a non-admin caller, without `confirm == "wipe"`, or SQLite.
+    /// @param confirm Must be `wipe`.
+    /// @return The number of deleted messages.
+    /// @throws BridgeError The caller is not the admin, `confirm` is not `wipe`, or the database fails.
     pub fn clear(&self, caller: &Caller, confirm: &str) -> Result<usize, BridgeError> {
         if !caller.auth.admin {
             return Err(BridgeError::AdminRequired);
@@ -1492,6 +1646,10 @@ impl Bridge {
         Ok(usize::try_from(count).unwrap_or(0))
     }
 
+    /// @brief Tells if a wake must wait.
+    ///
+    /// @return The reason, or `None` when the wake can go now.
+    /// The reasons are: the hourly limit, or a successful wake shorter ago than the debounce time.
     fn wake_suppression(
         &self,
         recipient: &str,
@@ -1526,6 +1684,13 @@ impl Bridge {
         }))
     }
 
+    /// @brief Wakes the recipient of a message when the configuration has a wake target for it.
+    ///
+    /// @details A Codex mailbox wakes its session through `codex queue`, with retries.
+    /// An `OpenCode` session mailbox wakes its own session.
+    /// The fixed `opencode` mailbox of v1 clients wakes the most recent session.
+    ///
+    /// @return A short text that tells what the bus did, for the send result.
     fn maybe_wake(self: &Arc<Self>, recipient: &str) -> String {
         let is_codex = codex_session::is_canonical_mailbox(recipient);
         let is_opencode_session = opencode_session::is_session_mailbox(recipient);
@@ -1578,8 +1743,6 @@ impl Bridge {
             }
             return "wake-dispatched".to_owned();
         }
-        // An OpenCode session mailbox wakes its own session. The fixed `opencode` mailbox of v1
-        // clients wakes the most recent session.
         let session_id = if is_opencode_session {
             match Self::bound_session(&lock(&self.db), recipient) {
                 Ok(Some(session)) => Some(session),
@@ -1606,12 +1769,14 @@ impl Bridge {
         "wake-dispatched".to_owned()
     }
 
+    /// @brief Tells if a Codex wake task is still the current one for its mailbox.
     fn retry_current(&self, mailbox: &str, generation: u64) -> bool {
         lock(&self.retries)
             .get(mailbox)
             .is_some_and(|state| state.generation == generation)
     }
 
+    /// @brief Removes the current Codex wake task of a mailbox.
     fn finish_retry(&self, mailbox: &str, generation: u64) {
         let mut retries = lock(&self.retries);
         if retries
@@ -1622,6 +1787,9 @@ impl Bridge {
         }
     }
 
+    /// @brief Wakes a Codex session, and tries again after each delay of the configuration.
+    ///
+    /// @details The task stops when the wake is successful, when the mail is read, when a wake must wait, or when a newer task starts.
     async fn run_codex_wake(self: Arc<Self>, mailbox: String, target: WakeTarget, generation: u64) {
         let WakeTarget::Codex {
             retry_delays_seconds,
@@ -1668,6 +1836,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Stops the Codex wake task of a mailbox, when all its mail is read.
     fn cancel_retry(&self, mailbox: &str) {
         if let Some(state) = lock(&self.retries).remove(mailbox)
             && let Some(task) = state.task
@@ -1676,6 +1845,7 @@ impl Bridge {
         }
     }
 
+    /// @brief Writes a wake attempt in the database and in the log.
     fn record_wake(&self, recipient: &str, result: &WakeResult) {
         let ok = result.disposition.is_success();
         let detail = format!("{}: {}", result.disposition.as_str(), result.detail);
@@ -1692,10 +1862,11 @@ impl Bridge {
         );
     }
 
-    /// Wakes the Codex sessions that still have unread mail. Called once at startup.
+    /// @brief Wakes the Codex sessions that have unread mail.
     ///
-    /// # Errors
-    /// Returns SQLite errors.
+    /// @details The daemon calls this function once, at start.
+    ///
+    /// @throws BridgeError::Db The database fails.
     pub fn reconcile_codex_wakes(self: &Arc<Self>) -> Result<(), BridgeError> {
         let sessions = codex_session::list_with_unread(&lock(&self.db))?;
         for (session, unread) in sessions {
@@ -1706,10 +1877,9 @@ impl Bridge {
         Ok(())
     }
 
-    /// Registers a Codex session, for the Codex hook of that session.
+    /// @brief Registers a Codex session, for the Codex hook of that session.
     ///
-    /// # Errors
-    /// Returns an error for an invalid session id, a caller signed for another session, or SQLite.
+    /// @throws BridgeError The session id is not valid, the request is signed for another session, or the database fails.
     pub fn register_codex(
         &self,
         caller: &Caller,
@@ -1730,10 +1900,9 @@ impl Bridge {
         )?)
     }
 
-    /// Records the lifecycle of a registered Codex session, for the Codex hook of that session.
+    /// @brief Keeps the state of a Codex session, for the Codex hook of that session.
     ///
-    /// # Errors
-    /// Returns an error for a caller that cannot act as the mailbox, or SQLite.
+    /// @throws BridgeError The caller cannot act for the mailbox, or the database fails.
     pub fn touch_codex(
         &self,
         caller: &Caller,
@@ -1748,8 +1917,9 @@ impl Bridge {
         )?)
     }
 
-    /// # Errors
-    /// Returns an error for an invalid session id or SQLite.
+    /// @brief Finds a registered Codex session from its id.
+    ///
+    /// @throws BridgeError The session id is not valid, or the database fails.
     pub fn codex_by_session_id(
         &self,
         session_id: &str,
