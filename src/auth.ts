@@ -190,7 +190,11 @@ export function authenticateAuthorizationHeader(runtime: AuthRuntime, authorizat
 }
 
 function getHeader(headers: Record<string, string | undefined>, name: string): string | undefined {
-  return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+  const value = headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+  if (value !== undefined || !name.startsWith("x-inband-")) return value;
+  // Hooks installed before the rename send x-agent-bridge-* headers with the same signature.
+  const legacy = name.replace("x-inband-", "x-agent-bridge-");
+  return headers[legacy] ?? headers[legacy.toLowerCase()];
 }
 
 function purgeOldNonces(runtime: AuthRuntime, nowMs: number): void {
