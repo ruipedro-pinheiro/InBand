@@ -24,5 +24,8 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"
 thiserror = "2.0.21"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "io-std", "time"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "io-std", "time", "sync"] }
 url = "2.5.8"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
