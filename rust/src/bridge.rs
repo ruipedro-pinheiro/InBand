@@ -38,8 +38,8 @@ type AgentRow = (String, String, Option<String>);
 pub enum BridgeError {
     #[error("invalid {field} \"{raw}\": expected 1-64 chars of [a-z0-9_-]")]
     InvalidName { field: &'static str, raw: String },
-    #[error("\"codex\" is a recipient-only alias, not an agent identity")]
-    AliasIdentity,
+    #[error("\"{0}\" is a recipient-only alias, not an agent identity")]
+    AliasIdentity(String),
     #[error("content is empty")]
     Empty,
     #[error("content is {size} bytes; max is {max}")]
@@ -52,6 +52,10 @@ pub enum BridgeError {
     NoCodexSession,
     #[error("mailbox \"{0}\" belongs to another session; send from your own session")]
     BoundToOtherSession(String),
+    #[error("this token cannot use {field} \"{agent}\"")]
+    NotAuthorized { field: &'static str, agent: String },
+    #[error("\"{0}\" needs a request signed by its own session")]
+    SessionRequired(String),
     #[error("routing refused: {0}")]
     Routing(&'static str),
     #[error("the message contains a configured token; secrets must not travel in mail")]
@@ -318,8 +322,8 @@ impl Bridge {
     }
 
     fn require_concrete(name: &str) -> Result<(), BridgeError> {
-        if name == CODEX_FAMILY {
-            Err(BridgeError::AliasIdentity)
+        if name == CODEX_FAMILY || name == "all" {
+            Err(BridgeError::AliasIdentity(name.to_owned()))
         } else {
             Ok(())
         }
@@ -404,33 +408,79 @@ impl Bridge {
         .optional()
     }
 
-    /// Binds a mailbox to the session that registered it. Called from signed `SessionStart` hooks.
+    /// Binds a mailbox to the session that signs the request. Called from signed `SessionStart`
+    /// hooks. A binding is never moved to another session: that would let any session take the
+    /// mailbox of another one, the lead included.
     ///
     /// # Errors
-    /// Returns an error for an invalid mailbox or SQLite.
-    pub fn bind_session(&self, mailbox_raw: &str, session_key: &str) -> Result<(), BridgeError> {
+    /// Returns an error for an invalid mailbox, a token that cannot use it, a request without a
+    /// session, a mailbox bound to another session, or SQLite.
+    pub fn bind_session(&self, caller: &Caller, mailbox_raw: &str) -> Result<(), BridgeError> {
         let mailbox = Self::normalize_agent(mailbox_raw, "mailbox")?;
         Self::require_concrete(&mailbox)?;
+        Self::require_token_scope(caller, "mailbox", &mailbox)?;
+        let session_key = caller
+            .session
+            .clone()
+            .ok_or_else(|| BridgeError::SessionRequired(mailbox.clone()))?;
         let now = iso_now();
         let mut db = lock(&self.db);
+        match Self::bound_session(&db, &mailbox)? {
+            Some(bound) if bound != session_key => {
+                return Err(BridgeError::BoundToOtherSession(mailbox));
+            }
+            _ => {}
+        }
         Self::touch_agent(&mut db, &mailbox)?;
         db.execute(
             "INSERT INTO sessions(mailbox, session_key, bound_at, last_seen) VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(mailbox) DO UPDATE SET session_key = ?2, last_seen = ?3",
+             ON CONFLICT(mailbox) DO UPDATE SET last_seen = ?3",
             params![mailbox, session_key, now],
         )?;
         Ok(())
     }
 
-    fn check_identity(db: &Connection, caller: &Caller, from: &str) -> Result<(), BridgeError> {
+    fn require_token_scope(
+        caller: &Caller,
+        field: &'static str,
+        mailbox: &str,
+    ) -> Result<(), BridgeError> {
+        if caller.auth.admin
+            || caller
+                .auth
+                .agents
+                .iter()
+                .any(|pattern| agent_matches_pattern(mailbox, pattern))
+        {
+            Ok(())
+        } else {
+            Err(BridgeError::NotAuthorized {
+                field,
+                agent: mailbox.to_owned(),
+            })
+        }
+    }
+
+    /// Checks that the caller may act as `mailbox`.
+    ///
+    /// Sessions of one family share a token, so the token alone does not say which session calls.
+    /// Only a request signed for the session bound to the mailbox proves it. The one exception is a
+    /// token whose patterns name this mailbox exactly: no other mailbox can use it.
+    fn check_acting(
+        db: &Connection,
+        caller: &Caller,
+        field: &'static str,
+        mailbox: &str,
+    ) -> Result<(), BridgeError> {
         if caller.auth.admin {
             return Ok(());
         }
-        match Self::bound_session(db, from)? {
-            Some(bound) if caller.session.as_deref() != Some(bound.as_str()) => {
-                Err(BridgeError::BoundToOtherSession(from.to_owned()))
-            }
-            _ => Ok(()),
+        Self::require_token_scope(caller, field, mailbox)?;
+        match Self::bound_session(db, mailbox)? {
+            Some(bound) if caller.session.as_deref() == Some(bound.as_str()) => Ok(()),
+            Some(_) => Err(BridgeError::BoundToOtherSession(mailbox.to_owned())),
+            None if caller.auth.agents.iter().any(|pattern| pattern == mailbox) => Ok(()),
+            None => Err(BridgeError::SessionRequired(mailbox.to_owned())),
         }
     }
 
@@ -646,7 +696,7 @@ impl Bridge {
     ) -> Result<Routed, BridgeError> {
         let tx = db.transaction()?;
         Self::require_registered_codex(&tx, from)?;
-        Self::check_identity(&tx, caller, from)?;
+        Self::check_acting(&tx, caller, "from", from)?;
         let resolved_to = if requested_to == CODEX_FAMILY {
             codex_session::most_recent(&tx)?
                 .ok_or(BridgeError::NoCodexSession)?
@@ -748,7 +798,12 @@ impl Bridge {
         Self::require_concrete(&mailbox)?;
         let mut db = lock(&self.db);
         Self::require_registered_codex(&db, &mailbox)?;
-        Self::check_identity(&db, caller, &mailbox)?;
+        // A team change needs the signed session even for an exact token: the OpenCode model can run
+        // its slash commands itself, so only the user's own CLI, with the admin token, moves it.
+        if !caller.auth.admin && caller.session.is_none() {
+            return Err(BridgeError::SessionRequired(mailbox));
+        }
+        Self::check_acting(&db, caller, "mailbox", &mailbox)?;
         Self::touch_agent(&mut db, &mailbox)?;
         Ok((mailbox, db))
     }

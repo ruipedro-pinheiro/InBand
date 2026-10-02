@@ -20,13 +20,19 @@ impl Sanitized {
     }
 }
 
+/// Chars that render as nothing, or that change the direction of the text around them.
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
         // Bidi embeddings, overrides and isolates, and the directional marks.
         '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
-        // Zero-width characters and the byte order mark.
-        | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+        // Zero-width chars, word joiner, invisible operators and the byte order mark.
+        | '\u{200B}'..='\u{200D}' | '\u{2060}'..='\u{2065}' | '\u{206A}'..='\u{206F}' | '\u{FEFF}'
+        // Soft hyphen, combining grapheme joiner, Mongolian and Khmer fillers, Hangul fillers.
+        | '\u{00AD}' | '\u{034F}' | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}'
+        | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}'
+        // Variation selectors, interlinear annotation, tag chars and their supplement.
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
@@ -73,18 +79,21 @@ fn starts_channel_tag(chars: &[char]) -> bool {
     word.eq_ignore_ascii_case("channel")
 }
 
-/// Removes terminal escapes, control chars other than newline and tab, and invisible bidi or
-/// zero-width chars. Escapes `<` when it opens a channel tag.
+/// Removes terminal escapes, control chars other than newline and tab, and invisible chars. Then
+/// escapes `<` when it opens a channel tag.
+///
+/// The removal runs first: a tag split by removed chars, such as `<` ESC `[0m` `channel`, must be
+/// seen whole by the tag check.
 #[must_use]
 pub fn sanitize(content: &str) -> Sanitized {
     let chars: Vec<char> = content.chars().collect();
-    let mut out = String::with_capacity(content.len());
     let mut result = Sanitized {
         content: String::new(),
         removed_escapes: 0,
         removed_invisible: 0,
         escaped_tags: 0,
     };
+    let mut visible = Vec::with_capacity(chars.len());
     let mut index = 0;
     while index < chars.len() {
         let c = chars[index];
@@ -93,17 +102,24 @@ pub fn sanitize(content: &str) -> Sanitized {
             result.removed_escapes += 1;
             continue;
         }
-        if c == '<' && starts_channel_tag(&chars[index..]) {
-            out.push_str("&lt;");
-            result.escaped_tags += 1;
-        } else if (c.is_control() && c != '\n' && c != '\t') || matches!(c, '\u{80}'..='\u{9F}') {
+        if (c.is_control() && c != '\n' && c != '\t') || matches!(c, '\u{80}'..='\u{9F}') {
             result.removed_escapes += 1;
         } else if is_invisible(c) {
             result.removed_invisible += 1;
         } else {
-            out.push(c);
+            visible.push(c);
         }
         index += 1;
+    }
+
+    let mut out = String::with_capacity(content.len());
+    for (index, c) in visible.iter().enumerate() {
+        if *c == '<' && starts_channel_tag(&visible[index..]) {
+            out.push_str("&lt;");
+            result.escaped_tags += 1;
+        } else {
+            out.push(*c);
+        }
     }
     result.content = out;
     result
