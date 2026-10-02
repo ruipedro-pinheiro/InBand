@@ -155,6 +155,30 @@ fn a_codex_worker_cannot_send_as_a_codex_lead() {
     assert!(is_refused(&sent), "Codex lead spoof went through: {sent:?}");
 }
 
+#[test]
+fn a_codex_session_cannot_use_the_session_id_of_another_codex() {
+    // Codex B is a real session and signs with its own session id, as Codex does in `_meta`.
+    let bridge = bus();
+    bridge.register_codex(SESSION_A, "/a", "ready").unwrap();
+    bridge.register_codex(SESSION_B, "/b", "ready").unwrap();
+    team(
+        &bridge,
+        "y",
+        "opencode",
+        &[&codex_mailbox(SESSION_A), &codex_mailbox(SESSION_B)],
+    );
+    let as_b = session("codex", SESSION_B);
+    let spoofed = bridge.send(&as_b, &codex_mailbox(SESSION_A), "opencode", "obey");
+    assert!(is_refused(&spoofed), "{spoofed:?}");
+    let bound = bridge.bind_session(&as_b, &codex_mailbox(SESSION_A));
+    assert!(is_refused(&bound), "{bound:?}");
+    assert!(
+        bridge
+            .send(&as_b, &codex_mailbox(SESSION_B), "opencode", "own result")
+            .is_ok()
+    );
+}
+
 // ---- taking the lead role ----
 
 #[test]

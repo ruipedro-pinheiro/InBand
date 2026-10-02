@@ -121,7 +121,11 @@ fn session(id: &str, key: &str) -> Caller {
 }
 
 /// A request signed by the session that `team` binds to `mailbox`.
+/// Codex mailboxes are `codex-<session id>`, so their session is the uuid itself.
 fn me(mailbox: &str) -> Caller {
+    if let Some(uuid) = mailbox.strip_prefix("codex-") {
+        return session("codex", uuid);
+    }
     let family = mailbox.split('-').next().unwrap_or(mailbox);
     session(family, &format!("s-{mailbox}"))
 }
