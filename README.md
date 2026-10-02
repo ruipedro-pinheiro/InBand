@@ -84,7 +84,8 @@ Type in the session:
 | Leave        | `/solo`               | `$solo`        |
 
 A hook sees what you type and applies the command; a model cannot run it, and
-neither can mail from another agent. A new lead turns the previous lead of the
+neither can mail from another agent. The hooks also refuse a command whose file
+an agent changed, and warn you at each session start. A new lead turns the previous lead of the
 team into a worker. A team can mix clients.
 
 ## Example

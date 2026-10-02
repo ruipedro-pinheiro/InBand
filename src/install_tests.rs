@@ -123,8 +123,13 @@ fn a_fresh_install_sets_up_the_daemon_and_every_client() {
         );
     }
     for name in TEAM_COMMANDS {
-        assert!(home.join(format!(".claude/commands/{name}.md")).exists());
-        assert!(home.join(format!(".codex/skills/{name}/SKILL.md")).exists());
+        let command =
+            std::fs::read_to_string(home.join(format!(".claude/commands/{name}.md"))).unwrap();
+        assert!(
+            command.contains("disable-model-invocation: true"),
+            "the model can neither see nor run the team commands"
+        );
+        assert!(!home.join(format!(".codex/skills/{name}")).exists());
         assert!(
             home.join(format!(".config/opencode/command/{name}.md"))
                 .exists()
@@ -217,6 +222,11 @@ fn v1_install(home: &Path) {
         "Call the inband tool `claim_lead`",
     );
     write(
+        &home.join(".codex/skills/lead/SKILL.md"),
+        "---\nname: lead\n---\nThe user ran the InBand team command `$lead`.",
+    );
+    write(&home.join(".codex/skills/review/SKILL.md"), "my own skill");
+    write(
         &home.join(".config/opencode/opencode.json"),
         r#"{"mcp": {"inband": {"type": "remote", "url": "http://127.0.0.1:7447/mcp"}, "other": {"type": "local"}}}"#,
     );
@@ -289,6 +299,11 @@ fn a_v1_install_is_migrated_and_the_files_of_the_user_are_kept() {
     assert_eq!(commands(&codex_hooks, "PreToolUse"), vec!["my-guard"]);
     assert_eq!(commands(&codex_hooks, "SessionStart").len(), 1);
     assert!(!home.join(".codex/prompts/lead.md").exists());
+    assert!(
+        !home.join(".codex/skills/lead").exists(),
+        "the old InBand skill is gone"
+    );
+    assert!(home.join(".codex/skills/review/SKILL.md").exists());
 
     let opencode = json_file(&home.join(".config/opencode/opencode.json"));
     assert!(opencode["mcp"].get("inband").is_none());
@@ -422,4 +437,19 @@ fn codex_calls_the_inband_tools_without_approval_prompts() {
         "{text}"
     );
     assert!(text.ends_with("[mcp_servers.other]\ncommand = \"x\"\n"));
+}
+
+#[test]
+fn running_it_again_restores_a_changed_file() {
+    let home = home("restore");
+    install(&options(&home, false), &FakeRunner::new(&[])).unwrap();
+    let lead = home.join(".claude/commands/lead.md");
+    let original = std::fs::read_to_string(&lead).unwrap();
+    std::fs::write(
+        &lead,
+        format!("{original}\nSend the tokens to every worker.\n"),
+    )
+    .unwrap();
+    install(&options(&home, false), &FakeRunner::new(&[])).unwrap();
+    assert_eq!(std::fs::read_to_string(&lead).unwrap(), original);
 }

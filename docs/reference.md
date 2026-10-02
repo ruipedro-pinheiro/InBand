@@ -41,7 +41,7 @@ exists. Per client, the installer writes:
 | Client      | Hooks                                                      | Tools                                  | Team commands                          |
 | ----------- | ---------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
 | Claude Code | SessionStart, UserPromptSubmit, PostToolUse, SessionEnd in `settings.json` | `claude mcp add --scope user inband -- inband shim` | `~/.claude/commands/{lead,join,solo}.md` |
-| Codex       | SessionStart, UserPromptSubmit, Stop in `hooks.json`       | `codex mcp add inband -- inband shim --codex`, without approval prompts | `~/.codex/skills/{lead,join,solo}/`    |
+| Codex       | SessionStart, UserPromptSubmit, Stop in `hooks.json`       | `codex mcp add inband -- inband shim --codex`, without approval prompts | none: the hook reads `$lead x` itself  |
 | OpenCode    | none: the plugin                                           | `~/.config/opencode/plugin/inband.js`  | `~/.config/opencode/command/{lead,join,solo}.md` |
 
 What it keeps:
@@ -234,10 +234,26 @@ act as another agent, the lead above all.
 - `tokens.env`, `config.json` and `bridge.db` have mode 600. The daemon binds
   to loopback and rejects requests without a valid token.
 
+- **The instruction files of InBand are checked.** Claude Code sends the text
+  of a command file, such as `~/.claude/commands/lead.md`, to the model with
+  the trust of the user. An agent that changed this file could thus give
+  instructions in the name of the user. The binary contains the exact text of
+  each file that it installs:
+  - at each session start, the hooks list the InBand files that differ, warn
+    the user, and tell the model not to follow them;
+  - a team command whose command file differs is refused before the model
+    sees it;
+  - `inband install` restores the files.
+
+  The Claude Code commands also have `disable-model-invocation: true`: the
+  model can neither see nor run them. Codex needs no file for `$lead x`.
+
 What it does not cover: every process of the same Unix user can read
 `tokens.env` and sign any request. An agent that runs shell commands can do
 that too. InBand stops impersonation through the tools; it does not isolate
-the processes of one user from each other.
+the processes of one user from each other. Such an agent can also change the
+hooks or the binary themselves: keep the permission prompts or the sandbox of
+your agents on for writes outside the project.
 
 ## Limits
 

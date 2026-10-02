@@ -112,7 +112,7 @@ async fn team(base: &str) {
     for session in [LEAD_SESSION, WORKER_SESSION] {
         let start =
             json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": "/work/repo"});
-        claude_hook(&daemon, &start, &state).await.unwrap();
+        claude_hook(&daemon, &start, &state, None).await.unwrap();
     }
     let lead = identity(LEAD_SESSION).mailbox;
     let worker = identity(WORKER_SESSION).mailbox;
@@ -318,7 +318,9 @@ async fn the_codex_shim_signs_the_session_that_codex_names() {
     let daemon = daemon_client(&base, CODEX_CLIENT);
     for session in [CODEX_SESSION, OTHER_CODEX_SESSION] {
         let start = json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": "/repo", "source": "startup"});
-        crate::hooks::codex_hook(&daemon, &start).await.unwrap();
+        crate::hooks::codex_hook(&daemon, &start, None)
+            .await
+            .unwrap();
     }
     let lead = format!("codex-{CODEX_SESSION}");
     let worker = format!("codex-{OTHER_CODEX_SESSION}");

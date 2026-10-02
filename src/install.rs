@@ -11,32 +11,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::assets::{ClientDirs, TEAM_COMMANDS};
 use crate::config::{EnvMap, load_bridge_config};
 use crate::tokens::{apply_legacy_env, read_token_lines};
 
 const CONFIG_EXAMPLE: &str = include_str!("../assets/config.example.json");
 /// The systemd user unit. `@BIN@` becomes the path of the binary.
 const SERVICE_UNIT: &str = include_str!("../assets/inband.service");
-const OPENCODE_PLUGIN: &str = include_str!("../assets/opencode/inband.js");
-const TEAM_COMMANDS: [&str; 3] = ["lead", "join", "solo"];
-/// The Claude Code commands, in the order of [`TEAM_COMMANDS`].
-const CLAUDE_COMMANDS: [&str; 3] = [
-    include_str!("../assets/claude/commands/lead.md"),
-    include_str!("../assets/claude/commands/join.md"),
-    include_str!("../assets/claude/commands/solo.md"),
-];
-/// The `OpenCode` commands, in the order of [`TEAM_COMMANDS`].
-const OPENCODE_COMMANDS: [&str; 3] = [
-    include_str!("../assets/opencode/command/lead.md"),
-    include_str!("../assets/opencode/command/join.md"),
-    include_str!("../assets/opencode/command/solo.md"),
-];
-/// The Codex skills, in the order of [`TEAM_COMMANDS`].
-const CODEX_SKILLS: [&str; 3] = [
-    include_str!("../assets/codex/skills/lead/SKILL.md"),
-    include_str!("../assets/codex/skills/join/SKILL.md"),
-    include_str!("../assets/codex/skills/solo/SKILL.md"),
-];
+/// The marker of the Codex skills of an earlier version, which the installer now removes.
+const CODEX_SKILL_MARKER: &str = "InBand team command";
 const TOKEN_VARS: [&str; 4] = [
     "INBAND_ADMIN_TOKEN",
     "INBAND_CLAUDE_TOKEN",
@@ -180,45 +163,29 @@ pub fn install(options: &InstallOptions, runner: &dyn Runner) -> Result<Report, 
         report.port = Some(write_config(&data, runner, &options.env, &mut report)?);
     }
 
-    let config_home = options
-        .env
-        .get("XDG_CONFIG_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(|| home.join(".config"), PathBuf::from);
-    let claude_dir = options
-        .env
-        .get("CLAUDE_CONFIG_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(|| home.join(".claude"), PathBuf::from);
-
+    let dirs = ClientDirs::new(home, &options.env);
     report.step("Claude Code");
-    if client_present(&claude_dir, "claude", runner) {
-        install_claude(&claude_dir, &binary, runner, &mut report)?;
+    if client_present(&dirs.claude, "claude", runner) {
+        install_claude(&dirs, runner, &mut report)?;
     } else {
         report.say("not found, skipped");
     }
     report.step("Codex");
-    let codex_dir = options
-        .env
-        .get("CODEX_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(|| home.join(".codex"), PathBuf::from);
-    if client_present(&codex_dir, "codex", runner) {
-        install_codex(&codex_dir, &binary, runner, &mut report)?;
+    if client_present(&dirs.codex, "codex", runner) {
+        install_codex(&dirs, runner, &mut report)?;
     } else {
         report.say("not found, skipped");
     }
     report.step("OpenCode");
-    let opencode_dir = config_home.join("opencode");
-    if client_present(&opencode_dir, "opencode", runner) {
-        install_opencode(&opencode_dir, &binary, &mut report)?;
+    if client_present(&dirs.opencode(), "opencode", runner) {
+        install_opencode(&dirs, &mut report)?;
     } else {
         report.say("not found, skipped");
     }
 
     if options.service && !options.client_only {
         report.step("Daemon service");
-        install_service(&config_home, &binary, runner, &mut report)?;
+        install_service(&dirs.config_home, &binary, runner, &mut report)?;
     }
     if options.client_only {
         report.todo.push(format!(
@@ -557,6 +524,20 @@ fn write_owned(path: &Path, text: &str, report: &mut Report) -> Result<(), Insta
     write_file(path, text, None)
 }
 
+/// Writes the files of InBand that are in `directory`.
+fn write_managed(
+    dirs: &ClientDirs,
+    directory: &Path,
+    report: &mut Report,
+) -> Result<(), InstallError> {
+    for file in dirs.managed_files() {
+        if file.path.starts_with(directory) {
+            write_owned(&file.path, &file.text, report)?;
+        }
+    }
+    Ok(())
+}
+
 /// Removes a file when it is a v1 file of InBand.
 fn remove_v1(path: &Path, report: &mut Report) -> Result<(), InstallError> {
     if read_optional(path)?.is_some_and(|text| text.contains(V1_MARKER)) {
@@ -581,11 +562,11 @@ fn is_claude_hook(command: &str) -> bool {
 /// Writes the Claude Code hooks and commands, and replaces the v1 MCP servers with the shim. v1
 /// used an HTTP server and a separate channel server; the shim does the work of both.
 fn install_claude(
-    dir: &Path,
-    binary: &Path,
+    dirs: &ClientDirs,
     runner: &dyn Runner,
     report: &mut Report,
 ) -> Result<(), InstallError> {
+    let (dir, binary) = (&dirs.claude, &dirs.binary);
     let settings_path = dir.join("settings.json");
     let (before, mut settings) = read_json(&settings_path)?;
     let command = format!("{} hook claude", shell_quote(binary));
@@ -615,9 +596,7 @@ fn install_claude(
             std::fs::remove_file(&path).map_err(io_error(&path))?;
         }
     }
-    for (name, text) in TEAM_COMMANDS.iter().zip(CLAUDE_COMMANDS) {
-        write_owned(&dir.join(format!("commands/{name}.md")), text, report)?;
-    }
+    write_managed(dirs, &dir.join("commands"), report)?;
     report.say("commands /lead, /join and /solo installed");
 
     let shim = binary.display().to_string();
@@ -660,11 +639,11 @@ fn is_codex_hook(command: &str) -> bool {
 /// v1 used an HTTP server with the token in the environment. The shim reads the token file itself,
 /// so Codex needs no token in its environment.
 fn install_codex(
-    dir: &Path,
-    binary: &Path,
+    dirs: &ClientDirs,
     runner: &dyn Runner,
     report: &mut Report,
 ) -> Result<(), InstallError> {
+    let (dir, binary) = (&dirs.codex, &dirs.binary);
     let hooks_path = dir.join("hooks.json");
     let (before, mut hooks) = read_json(&hooks_path)?;
     let command = format!("{} hook codex", shell_quote(binary));
@@ -688,11 +667,8 @@ fn install_codex(
             .todo
             .push("Codex asks you to trust the new hooks on its next start".to_owned());
     }
-    for (name, text) in TEAM_COMMANDS.iter().zip(CODEX_SKILLS) {
-        write_owned(&dir.join(format!("skills/{name}/SKILL.md")), text, report)?;
-    }
     remove_v1(&dir.join("prompts/lead.md"), report)?;
-    report.say("skills $lead, $join and $solo installed");
+    remove_codex_skills(dir, report)?;
 
     let shim = binary.display().to_string();
     let add = [
@@ -757,17 +733,9 @@ fn approve_codex_tools(path: &Path, report: &mut Report) -> Result<(), InstallEr
 ///
 /// `opencode mcp add` writes `opencode.jsonc`. A rewrite would lose the comments of such a file, so
 /// the user removes the entry there.
-fn install_opencode(dir: &Path, binary: &Path, report: &mut Report) -> Result<(), InstallError> {
-    let default_bin = "process.env.INBAND_BIN || \"inband\"";
-    let baked = format!(
-        "process.env.INBAND_BIN || {}",
-        Value::String(binary.display().to_string())
-    );
-    let plugin = OPENCODE_PLUGIN.replace(default_bin, &baked);
-    write_owned(&dir.join("plugin/inband.js"), &plugin, report)?;
-    for (name, text) in TEAM_COMMANDS.iter().zip(OPENCODE_COMMANDS) {
-        write_owned(&dir.join(format!("command/{name}.md")), text, report)?;
-    }
+fn install_opencode(dirs: &ClientDirs, report: &mut Report) -> Result<(), InstallError> {
+    let dir = &dirs.opencode();
+    write_managed(dirs, dir, report)?;
     remove_v1(&dir.join("commands/lead.md"), report)?;
     report.say("plugin and commands /lead, /join and /solo installed");
 
@@ -805,6 +773,23 @@ fn install_opencode(dir: &Path, binary: &Path, report: &mut Report) -> Result<()
 
 /// Installs and starts the systemd user service. The old `agent-bridge` service uses the same port,
 /// so the function stops and removes it.
+/// Removes the `$lead`, `$join` and `$solo` skills of an earlier version.
+///
+/// Codex gives the hooks `$lead x` without a skill, and Codex puts the description of each skill in
+/// the context of every session: a skill would only add text that an agent could change.
+fn remove_codex_skills(dir: &Path, report: &mut Report) -> Result<(), InstallError> {
+    for name in TEAM_COMMANDS {
+        let skill = dir.join(format!("skills/{name}"));
+        let file = skill.join("SKILL.md");
+        if read_optional(&file)?.is_some_and(|text| text.contains(CODEX_SKILL_MARKER)) {
+            std::fs::remove_file(&file).map_err(io_error(&file))?;
+            let _ = std::fs::remove_dir(&skill);
+            report.say(format!("removed the old skill {}", skill.display()));
+        }
+    }
+    Ok(())
+}
+
 fn install_service(
     config_home: &Path,
     binary: &Path,

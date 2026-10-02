@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use inband::assets::ClientDirs;
 use inband::client::Client;
 use inband::config::EnvMap;
 use inband::hooks::{self, MailcheckState};
@@ -113,12 +114,19 @@ async fn hook(client: HookClient) -> Result<(), String> {
         HookClient::Claude => ("claude", ""),
         HookClient::Codex => ("codex", "{}"),
     };
+    let files = ClientDirs::from_env(&env());
     let output = match Client::from_env(id, env()) {
         Ok(daemon) => match client {
             HookClient::Claude => {
-                hooks::claude_hook(&daemon, &payload, &MailcheckState::from_env(&env())).await
+                hooks::claude_hook(
+                    &daemon,
+                    &payload,
+                    &MailcheckState::from_env(&env()),
+                    files.as_ref(),
+                )
+                .await
             }
-            HookClient::Codex => hooks::codex_hook(&daemon, &payload).await,
+            HookClient::Codex => hooks::codex_hook(&daemon, &payload, files.as_ref()).await,
         },
         Err(error) => {
             eprintln!("inband: {error}");
@@ -146,7 +154,13 @@ async fn opencode(session: Option<&str>, action: OpencodeAction) -> Result<ExitC
     let session = session.ok_or("--session is required")?;
     let (text, failed) = match action {
         OpencodeAction::Tools => unreachable!("handled above"),
-        OpencodeAction::Context => (opencode_cli::context(&daemon, session).await?, false),
+        OpencodeAction::Context => {
+            let files = ClientDirs::from_env(&env());
+            (
+                opencode_cli::context(&daemon, session, files.as_ref()).await?,
+                false,
+            )
+        }
         OpencodeAction::Team { command, arguments } => {
             match opencode_cli::team(&daemon, session, &command, &arguments).await {
                 Ok(text) => (text, false),
