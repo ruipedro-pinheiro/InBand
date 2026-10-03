@@ -123,6 +123,7 @@ async fn hook(client: HookClient) -> Result<(), String> {
                     &payload,
                     &MailcheckState::from_env(&env()),
                     files.as_ref(),
+                    env().get("CLAUDE_PROJECT_DIR").map(String::as_str),
                 )
                 .await
             }
