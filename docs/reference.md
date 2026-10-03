@@ -64,7 +64,8 @@ Names match `[a-z0-9_-]{1,64}`.
 | Codex       | `codex-<session uuid>`                  |
 | OpenCode    | `opencode-<16 hex of SHA-256(session)>` |
 
-`<dir>` is the first 20 characters of the working directory name. After
+`<dir>` is the first 20 characters of the name of the directory where the
+session started. A `cd` of the agent does not change the mailbox. After
 `/clear` in Claude Code, the session changes, so the mailbox changes too.
 
 Recipient aliases: `codex` is the most recent Codex session. `all` is the
