@@ -179,7 +179,23 @@ fn text_field<'a>(payload: &'a Value, name: &str) -> &'a str {
         .unwrap_or_default()
 }
 
+/// Returns the directory that names the mailbox of a Claude Code session.
+///
+/// `project_dir` is `CLAUDE_PROJECT_DIR`: the directory where the session started. It does not
+/// change. The `cwd` of a hook follows each `cd` of the agent, so a name made from it changes
+/// during the session, and the shim then listens to another mailbox than the one of the hooks.
+/// `cwd` is the fallback for a Claude Code that does not set the variable.
+#[must_use]
+pub fn mailbox_directory<'a>(project_dir: Option<&'a str>, cwd: &'a str) -> &'a str {
+    project_dir
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .unwrap_or(cwd)
+}
+
 /// Runs one Claude Code hook, and returns its output, or `None` when it has nothing to say.
+///
+/// `project_dir` is the value of `CLAUDE_PROJECT_DIR`, see [`mailbox_directory`].
 ///
 /// - `SessionStart` binds the mailbox, and returns the identity and the protocol.
 /// - `UserPromptSubmit` runs a team command.
@@ -190,12 +206,14 @@ pub async fn claude_hook(
     payload: &Value,
     state: &MailcheckState,
     files: Option<&ClientDirs>,
+    project_dir: Option<&str>,
 ) -> Option<Value> {
     let session = text_field(payload, "session_id");
     if session.is_empty() {
         return None;
     }
-    let mailbox = claude_mailbox(text_field(payload, "cwd"), session);
+    let directory = mailbox_directory(project_dir, text_field(payload, "cwd"));
+    let mailbox = claude_mailbox(directory, session);
     match text_field(payload, "hook_event_name") {
         "SessionStart" => {
             let mut output = claude_session_start(client, &mailbox, session).await;

@@ -76,6 +76,7 @@ async fn hook(
         &claude(event, session, extra),
         &MailcheckState::always(),
         None,
+        None,
     )
     .await
 }
@@ -158,6 +159,7 @@ async fn check_mail_reminders(
         &claude("PostToolUse", WORKER_SESSION, &json!({})),
         &state,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -166,6 +168,7 @@ async fn check_mail_reminders(
         daemon,
         &claude("PostToolUse", LEAD_SESSION, &json!({})),
         &state,
+        None,
         None,
     )
     .await
@@ -179,6 +182,7 @@ async fn check_mail_reminders(
         daemon,
         &claude("PostToolUse", LEAD_SESSION, &json!({})),
         &state,
+        None,
         None,
     )
     .await;
@@ -195,6 +199,7 @@ async fn a_wrong_token_is_refused_and_blocks_the_command() {
         &claude("SessionStart", LEAD_SESSION, &json!({})),
         &state,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -207,6 +212,7 @@ async fn a_wrong_token_is_refused_and_blocks_the_command() {
             &json!({"prompt": "/lead x"}),
         ),
         &state,
+        None,
         None,
     )
     .await
@@ -252,6 +258,7 @@ async fn hooks_fail_open_when_the_daemon_is_down() {
         &daemon,
         &claude("SessionStart", LEAD_SESSION, &json!({})),
         &MailcheckState::always(),
+        None,
         None,
     )
     .await
@@ -301,7 +308,7 @@ async fn a_changed_command_file_is_refused_and_reported() {
     let state = MailcheckState::always();
     let files = installed_files("poison");
     let start = claude("SessionStart", LEAD_SESSION, &json!({}));
-    let clean = claude_hook(&daemon, &start, &state, Some(&files))
+    let clean = claude_hook(&daemon, &start, &state, Some(&files), None)
         .await
         .unwrap();
     assert!(clean.get("systemMessage").is_none(), "{clean}");
@@ -314,7 +321,7 @@ async fn a_changed_command_file_is_refused_and_reported() {
     )
     .unwrap();
 
-    let warned = claude_hook(&daemon, &start, &state, Some(&files))
+    let warned = claude_hook(&daemon, &start, &state, Some(&files), None)
         .await
         .unwrap();
     assert!(
@@ -335,7 +342,7 @@ async fn a_changed_command_file_is_refused_and_reported() {
         LEAD_SESSION,
         &json!({"prompt": "/lead x"}),
     );
-    let refused = claude_hook(&daemon, &prompt, &state, Some(&files))
+    let refused = claude_hook(&daemon, &prompt, &state, Some(&files), None)
         .await
         .unwrap();
     assert_eq!(refused["decision"], "block");
@@ -358,7 +365,7 @@ async fn a_changed_command_file_is_refused_and_reported() {
         LEAD_SESSION,
         &json!({"prompt": "/join x"}),
     );
-    let joined = claude_hook(&daemon, &join, &state, Some(&files))
+    let joined = claude_hook(&daemon, &join, &state, Some(&files), None)
         .await
         .unwrap();
     assert!(
@@ -387,4 +394,54 @@ async fn codex_sessions_are_warned_about_a_changed_plugin() {
         context_of(&out).contains(&format!("`codex-{CODEX_SESSION}`")),
         "{out}"
     );
+}
+
+#[test]
+fn the_project_directory_names_the_mailbox() {
+    assert_eq!(
+        mailbox_directory(Some("/home/dev"), "/home/dev/notes"),
+        "/home/dev"
+    );
+    assert_eq!(
+        mailbox_directory(None, "/home/dev/notes"),
+        "/home/dev/notes",
+        "a Claude Code without the variable"
+    );
+    assert_eq!(
+        mailbox_directory(Some("  "), "/home/dev/notes"),
+        "/home/dev/notes"
+    );
+}
+
+/// The `cwd` of a hook follows each `cd` of the agent. The mailbox must keep its name: the shim
+/// listens to the mailbox of the start, and a team command for another name makes a lead that
+/// receives no mail.
+#[tokio::test]
+async fn a_changed_working_directory_keeps_the_mailbox() {
+    let (base, bridge) = serve().await;
+    let daemon = daemon_client(&base, CLAUDE_CLIENT);
+    let state = MailcheckState::always();
+    let project = Some("/work/My Repo");
+    let mailbox = claude_mailbox("/work/My Repo", LEAD_SESSION);
+    let moved = claude_mailbox("/work/My Repo/notes", LEAD_SESSION);
+    assert_ne!(mailbox, moved);
+
+    let start = claude("SessionStart", LEAD_SESSION, &json!({}));
+    claude_hook(&daemon, &start, &state, None, project)
+        .await
+        .unwrap();
+    let lead = claude(
+        "UserPromptSubmit",
+        LEAD_SESSION,
+        &json!({"prompt": "/lead x", "cwd": "/work/My Repo/notes"}),
+    );
+    let lead = claude_hook(&daemon, &lead, &state, None, project)
+        .await
+        .unwrap();
+    assert!(
+        context_of(&lead).contains(&format!("`{mailbox}` is now the lead of team `x`")),
+        "{lead}"
+    );
+    assert!(bridge.membership(&mailbox).unwrap().is_some());
+    assert_eq!(bridge.membership(&moved).unwrap(), None);
 }

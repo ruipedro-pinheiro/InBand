@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 
 use crate::client::Client;
 use crate::config::EnvMap;
-use crate::hooks::claude_mailbox;
+use crate::hooks::{claude_mailbox, mailbox_directory};
 
 /// The time of one long poll. The daemon limits a long poll to 300 s.
 const POLL_SECONDS: u64 = 290;
@@ -48,6 +48,9 @@ pub struct ClaudeRegistry {
     file: PathBuf,
     pid: u32,
     first_session: String,
+    /// `CLAUDE_PROJECT_DIR`: the directory where the session started. The hooks name the mailbox
+    /// from it, so the shim does the same, see [`mailbox_directory`].
+    project_dir: Option<String>,
     /// The project directory, for a process that keeps no registry file (`claude -p`).
     first_cwd: Option<String>,
     /// `startedAt` and `procStart` of the process, pinned at the first valid read: a later file
@@ -85,21 +88,22 @@ impl ClaudeRegistry {
                     .map(|home| PathBuf::from(home).join(".claude"))
             })
             .ok_or("no HOME and no CLAUDE_CONFIG_DIR")?;
+        let project_dir = env
+            .get("CLAUDE_PROJECT_DIR")
+            .filter(|dir| !dir.trim().is_empty())
+            .cloned();
         Ok(Self {
             file: config_dir
                 .join("sessions")
                 .join(format!("{parent_pid}.json")),
             pid: parent_pid,
             first_session,
-            first_cwd: env
-                .get("CLAUDE_PROJECT_DIR")
-                .filter(|dir| !dir.is_empty())
-                .cloned()
-                .or_else(|| {
-                    std::env::current_dir()
-                        .ok()
-                        .map(|dir| dir.display().to_string())
-                }),
+            project_dir: project_dir.clone(),
+            first_cwd: project_dir.or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|dir| dir.display().to_string())
+            }),
             pinned: Mutex::new(None),
         })
     }
@@ -159,7 +163,7 @@ impl ClaudeRegistry {
         }
         Some(Identity {
             session: session.to_owned(),
-            mailbox: claude_mailbox(cwd, session),
+            mailbox: claude_mailbox(mailbox_directory(self.project_dir.as_deref(), cwd), session),
         })
     }
 }

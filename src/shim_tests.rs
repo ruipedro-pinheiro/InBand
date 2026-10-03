@@ -112,7 +112,9 @@ async fn team(base: &str) {
     for session in [LEAD_SESSION, WORKER_SESSION] {
         let start =
             json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": "/work/repo"});
-        claude_hook(&daemon, &start, &state, None).await.unwrap();
+        claude_hook(&daemon, &start, &state, None, None)
+            .await
+            .unwrap();
     }
     let lead = identity(LEAD_SESSION).mailbox;
     let worker = identity(WORKER_SESSION).mailbox;
@@ -377,4 +379,16 @@ async fn the_codex_shim_signs_the_session_that_codex_names() {
     )
     .await;
     assert!(anonymous.get("error").is_some(), "{anonymous}");
+}
+
+/// The shim and the hooks must give one session the same mailbox. The hooks name it from
+/// `CLAUDE_PROJECT_DIR`, so the shim does not use another directory of the registry file.
+#[test]
+fn the_registry_names_the_mailbox_from_the_project_directory() {
+    let dir = registry_dir("project");
+    let registry = registry(&dir, 4444, LEAD_SESSION);
+    let row = json!({"pid": 4444, "sessionId": LEAD_SESSION, "cwd": "/work/repo/notes",
+                     "startedAt": 100, "procStart": "77"});
+    std::fs::write(dir.join("sessions/4444.json"), row.to_string()).unwrap();
+    assert_eq!(registry.current(), Some(identity(LEAD_SESSION)));
 }
